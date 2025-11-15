@@ -1,0 +1,1 @@
+# xskeleton.xplugin
