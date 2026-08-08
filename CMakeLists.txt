@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(xgeom_static_compiler LANGUAGES C CXX)
+project(xskeleton_compiler LANGUAGES C CXX)
 set(TARGET_PROJECT "xskeleton_compiler")
 set(COMPONENT_REGISTRY "")
 
@@ -18,7 +18,7 @@ add_executable(${TARGET_PROJECT}
   "source/Compiler/main.cpp"
 )
 
-source_group("Geom_Compiler" FILES
+source_group("Skeleton_Compiler" FILES
   "source/Compiler/main.cpp"
 )
 

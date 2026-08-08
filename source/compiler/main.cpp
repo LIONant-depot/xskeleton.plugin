@@ -1,5 +1,5 @@
 
-#include "xgeom_static_compiler.h"
+#include "xskeleton_compiler.h"
 #include "dependencies/xscheduler/source/xscheduler.h"
 
 //---------------------------------------------------------------------------------------
@@ -14,7 +14,7 @@ int main( int argc, const char* argv[] )
     //
    // Create the compiler instance
    //
-    auto GeomCompilerPipeline = xgeom_static_compiler::instance::Create();
+    auto SkeletonCompilerPipeline = xskeleton_compiler::instance::Create();
 
     //
     // This is just for debugging
@@ -22,13 +22,13 @@ int main( int argc, const char* argv[] )
     if constexpr (false)
     {
         static const char* pDebugArgs[] =
-        { "StaticGeomCompiles..."
+        { "SkeletonCompiles..."
         , "-PROJECT"
         , "D:\\LIONant\\xGPU\\example.lionprj"
         , "-DEBUG"
         , "D1"
         , "-DESCRIPTOR"
-        , "Descriptors\\GeomStatic\\03\\40\\949478640AFE4003.desc"
+        , "Descriptors\\Skeleton\\03\\40\\949478640AFE4003.desc"
         , "-OUTPUT"
         , "D:\\LIONant\\xGPU\\example.lionprj\\Cache\\Resources\\Platforms\\WINDOWS"
         };
@@ -40,7 +40,7 @@ int main( int argc, const char* argv[] )
     //
     // Parse parameters
     //
-    if (auto Err = GeomCompilerPipeline->Parse(argc, argv); Err)
+    if (auto Err = SkeletonCompilerPipeline->Parse(argc, argv); Err)
     {
         Err.ForEachInChain([&](xerr Error)
         {
@@ -56,7 +56,7 @@ int main( int argc, const char* argv[] )
     //
     // Start compilation
     //
-    if (auto Err = GeomCompilerPipeline->Compile(); Err)
+    if (auto Err = SkeletonCompilerPipeline->Compile(); Err)
     {
         Err.ForEachInChain([&](xerr Error)
         {

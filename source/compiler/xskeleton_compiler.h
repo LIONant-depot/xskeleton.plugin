@@ -1,10 +1,10 @@
-#ifndef XGEOM_STATIC_COMPILER_H
-#define XGEOM_STATIC_COMPILER_H
+#ifndef XSKELETON_COMPILER_H
+#define XSKELETON_COMPILER_H
 #pragma once
 
 #include "dependencies/xresource_pipeline_v2/source/xresource_pipeline.h"
 
-namespace xgeom_static_compiler
+namespace xskeleton_compiler
 {
     enum class state : std::uint8_t
     { OK

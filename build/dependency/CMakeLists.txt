@@ -17,5 +17,4 @@ DefineInterfaceComponent(xskeleton_compiler_ "dependencies"
   "source/Compiler/xskeleton_compiler.h"
   "**XGPU"
   "source/xskeleton_xgpu_rsc_loader.h"
-  "source/xskeleton_xgpu_runtime.h"
 )

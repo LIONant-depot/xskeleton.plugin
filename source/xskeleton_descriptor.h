@@ -1,88 +1,113 @@
-#ifndef XGEOM_STATIC_DESCRIPTOR_H
-#define XGEOM_STATIC_DESCRIPTOR_H
+#ifndef XSKELETON_DESCRIPTOR_H
+#define XSKELETON_DESCRIPTOR_H
 #pragma once
 
 #include "plugins/xmaterial_instance.plugin/source/xmaterial_instance_xgpu_rsc_loader.h"
+#include "plugins/xskeleton.plugin/source/xskeleton_details.h"
+#include <functional>
+#include <format>
 
-namespace xgeom_static
+namespace xskeleton_desc
 {
-    // While this should be just a type... it also happens to be an instance... the instance of the texture_plugin
-    // So while generating the type guid we must treat it as an instance.
-    inline static constexpr auto    resource_type_guid_v    = xresource::type_guid(xresource::guid_generator::Instance64FromString("GeomStatic"));
+    inline static constexpr auto    resource_type_guid_v    = xresource::type_guid(xresource::guid_generator::Instance64FromString("xSkeleton"));
 
-    static constexpr wchar_t        mesh_filter_v[]         = L"Mesh\0 *.fbx; *.obj\0Any Thing\0 *.*\0";
-    inline static constexpr auto    merged_mesh_name_v      = "MERGED_MESH!!";
+    static constexpr wchar_t        mesh_filter_v[]         = L"Skeleton\0 *.fbx; *.obj\0Any Thing\0 *.*\0";
 
-    struct lod
-    {
-        float               m_LODReduction  = 0.7f;
-        float               m_ScreenArea    = 1;            // in pixels
-        XPROPERTY_DEF
-        ( "lod", lod
-        , obj_member<"LODReduction",    &lod::m_LODReduction >
-        , obj_member<"ScreenArea",      &lod::m_ScreenArea >
-        )
-    };
-    XPROPERTY_REG(lod)
-
-    struct mesh
-    {
-        std::string                 m_OriginalName          = {};
-        std::vector<std::string>    m_MaterialList          = {};
-        bool                        m_bMerge                = true;
-        std::uint32_t               m_MeshGUID              = {};
-        std::vector<lod>            m_LODs                  = {};
-
-        XPROPERTY_DEF
-        ( "mesh", mesh
-        , obj_member<"OriginalName",        &mesh::m_OriginalName, member_flags< flags::SHOW_READONLY> >
-        , obj_member<"Materials",           &mesh::m_MaterialList, member_flags< flags::SHOW_READONLY>, member_flags<flags::DONT_SAVE> >
-        , obj_member<"Merge",               &mesh::m_bMerge, member_dynamic_flags < +[](const mesh& O)
-            {
-                xproperty::flags::type Flags = {};
-                Flags.m_bShowReadOnly = O.m_OriginalName == merged_mesh_name_v;
-                return Flags;
-            } >>
-        , obj_member<"MeshGUID",            &mesh::m_MeshGUID, member_dynamic_flags < +[](const mesh& O)
-            {
-                xproperty::flags::type Flags = {};
-                Flags.m_bDontShow         = O.m_bMerge;
-                return Flags;
-            } >>
-        , obj_member<"LODs",                &mesh::m_LODs >
-        )
-    };
-    XPROPERTY_REG(mesh)
-
-    struct pre_transform
+    // Author-time transform: Euler radians, not a quaternion - nothing here is ever blended or
+    // interpolated (it's a static authored value, converted once by the compiler), so there's no
+    // correctness reason to pay for quaternion editing, and Euler is friendlier in a property grid.
+    // Same shape as xgeom_static's pre_transform.
+    struct transform
     {
         xmath::fvec3        m_Scale         = xmath::fvec3::fromOne();
-        xmath::fvec3        m_Rotation      = xmath::fvec3::fromZero();
+        xmath::fvec3        m_Rotation      = xmath::fvec3::fromZero();   // radians
         xmath::fvec3        m_Translation   = xmath::fvec3::fromZero();
 
         XPROPERTY_DEF
-        ( "preTransform", pre_transform
-        , obj_member<"Scale",           &pre_transform::m_Scale >
-        , obj_member<"Rotation",        &pre_transform::m_Rotation >
-        , obj_member<"Translation",     &pre_transform::m_Translation >
+        ( "Transform", transform
+        , obj_member<"Scale",           &transform::m_Scale >
+        , obj_member<"Rotation",        &transform::m_Rotation >
+        , obj_member<"Translation",     &transform::m_Translation >
         )
     };
-    XPROPERTY_REG(pre_transform)
+    XPROPERTY_REG(transform)
 
-/*
-    struct data
+    // A bone is a bone, whether or not any animation clip ever supplies it a curve.
+    // NORMAL   - Expected to receive animation curve data. m_Transform is the delta from the imported bind pose.
+    // VIRTUAL  - Never receives curve data from a clip. Its pose is supplied by something outside the
+    //            core animation evaluator (a weighted average of other bones, physics/IK, or a static
+    //            authored offset for an attachment socket). m_Transform is the delta from the parent,
+    //            and is used verbatim until/unless whoever drives this bone overwrites it.
+    enum class bone_type : std::uint8_t
+    { NORMAL
+    , VIRTUAL
+    };
+
+    static constexpr auto bone_type_v = std::array
+    { xproperty::settings::enum_item("NORMAL",  bone_type::NORMAL)
+    , xproperty::settings::enum_item("VIRTUAL", bone_type::VIRTUAL)
+    };
+
+    // A sparse override entry for one imported bone, matched BY NAME against the raw import (see
+    // xskeleton_compiler.cpp's CollectOverrides, which flattens this tree into a name->override map
+    // before compiling - tree position doesn't affect matching). m_Bones (children) is still here
+    // because the tree SHAPE mirrors the real skeleton hierarchy (kept in sync by MergeWithDetails),
+    // which is what makes this browsable/editable as a real hierarchy in the property panel instead
+    // of a flat, order-independent bag of 70+ entries.
+    struct bone
     {
-        int                 m_nUVs          = 1;
-        int                 m_nColors       = 0;
+        std::string             m_Name          = {};                    // Unique within this skeleton. Bones are matched by name across skin/animation/retargeting at author time - stays the RAW imported name so overrides keep matching across re-imports even after a rename (see m_Rename).
+        std::string             m_Rename        = {};                    // If non-empty, this bone's compiled/output name instead of m_Name (mirrors xgeom_static's ungroup_mesh: original identity kept separate from the editable output name).
+        transform                m_Transform     = {};                    // See bone_type for how this delta is interpreted.
+        bone_type               m_Type          = bone_type::NORMAL;
+        bool                    m_bExpose       = false;                 // Show as a socket/attachment point in editors that consume this skeleton.
+        bool                    m_bDeleteBone   = false;                 // Marks this (imported) bone for removal from the compiled skeleton.
+        int                     m_LODLevel      = 0;                     // Highest LOD index at which this bone is still active; frozen at its rest pose beyond it. 0 = always active.
+        std::vector<bone>       m_Bones         = {};                    // Children - see the struct comment.
 
         XPROPERTY_DEF
-        ( "data", data
-        , obj_member<"NumUVs",           &data::m_nUVs >
-        , obj_member<"NumColors",        &data::m_nColors >
+        ( "Bone", bone
+        , obj_member<"Name",         &bone::m_Name, member_flags< flags::SHOW_READONLY> >
+        , obj_member<"Rename",       &bone::m_Rename >
+        , obj_member<"Transform",    &bone::m_Transform >
+        , obj_member<"Type",         &bone::m_Type, member_enum_span<bone_type_v> >
+        , obj_member<"Expose",       &bone::m_bExpose >
+        , obj_member<"DeleteBone",   &bone::m_bDeleteBone >
+        , obj_member<"LODLevel",     &bone::m_LODLevel >
+        , obj_member<"Bones",        &bone::m_Bones >
         )
     };
-    XPROPERTY_REG(data)
-*/
+    XPROPERTY_REG(bone)
+
+    struct mask_entry
+    {
+        std::string    m_BoneName  = {};
+        float          m_Weight    = 1.0f;
+
+        XPROPERTY_DEF
+        ( "MaskEntry", mask_entry
+        , obj_member<"BoneName",    &mask_entry::m_BoneName >
+        , obj_member<"Weight",      &mask_entry::m_Weight >
+        )
+    };
+    XPROPERTY_REG(mask_entry)
+
+    // A named per-bone weight table (e.g. "UpperBody", "LowerBody"). Sparse here (bones not listed
+    // default to weight 0) - the compiler bakes it into a dense, fixed-point array sized to the full
+    // skeleton. Masking/blending math itself is the animation system's job; the skeleton only owns
+    // this name -> weight-table mapping.
+    struct mask_group
+    {
+        std::string                 m_Name      = {};
+        std::vector<mask_entry>     m_Entries   = {};
+
+        XPROPERTY_DEF
+        ( "MaskGroup", mask_group
+        , obj_member<"Name",        &mask_group::m_Name >
+        , obj_member<"Entries",     &mask_group::m_Entries >
+        )
+    };
+    XPROPERTY_REG(mask_group)
 
     struct descriptor : xresource_pipeline::descriptor::base
     {
@@ -96,118 +121,86 @@ namespace xgeom_static
         {
         }
 
-        int findMesh(std::string_view Name)
+        int findMaskGroup(std::string_view Name)
         {
-            for ( auto&E : m_MeshList)
-                if ( E.m_OriginalName == Name ) return static_cast<int>(&E - m_MeshList.data());
+            for (auto& E : m_MaskGroups)
+                if (E.m_Name == Name) return static_cast<int>(&E - m_MaskGroups.data());
             return -1;
         }
 
-        int findMaterial( std::string_view Name )
+        static bone* FindChildBone(bone& Node, std::string_view Name) noexcept
         {
-            for (auto& E : m_MaterialInstNamesList)
-                if (E == Name) return static_cast<int>(&E - m_MaterialInstNamesList.data());
-            return -1;
+            for (auto& Child : Node.m_Bones)
+                if (Child.m_Name == Name) return &Child;
+            return nullptr;
         }
 
-        bool hasMergedMesh()
+        // Same job as xgeom_static::descriptor::MergeWithDetails for meshes/nodes - reconciles this
+        // override tree against a freshly (re-)imported skeleton so it always has "one entry per
+        // bone", browsable/editable as a whole, not just whichever bones someone has already curated.
+        // Called from the editor on selection/reload, not the compiler (which only ever reads this,
+        // matching by name - see CollectOverrides - so tree SHAPE doesn't affect correctness; it's
+        // purely for human browsing/editing).
+        //
+        // Walks m_RootBone and Details.m_RootBone TOGETHER, level by level, so a new bone gets
+        // inserted under its real parent - not flatly dumped under root regardless of where it
+        // actually sits - and a bone removed/renamed/reparented in the source gets pruned from
+        // wherever it used to be. m_RootBone.m_Name gets kept in sync with the real root's name here
+        // too: leaving it blank was a real bug - the "is this bone the root" check the caller used to
+        // do elsewhere never matched anything, so the real root bone ended up ALSO added as an
+        // ordinary child - two "root bones" in the property panel, one anonymous (m_RootBone itself)
+        // and one named (the duplicate). Since m_RootBone is an ordinary `bone` (see its own comment)
+        // being the root is just "reachable via this field instead of someone else's m_Bones", not a
+        // different shape - so keeping its name in sync here needs no special-casing either.
+        std::vector<std::string> MergeWithDetails(const details& Details)
         {
-            return findMesh(merged_mesh_name_v) != -1 ;
-        }
+            std::vector<std::string> Messages;
 
-        void AddMergedMesh()
-        {
-            if (hasMergedMesh() == false)
+            std::function<void(bone&, const details::bone&)> Reconcile = [&](bone& Node, const details::bone& Src)
             {
-                auto& MergedMesh            = m_MeshList.emplace_back();
-                MergedMesh.m_OriginalName   = merged_mesh_name_v;
-                MergedMesh.m_bMerge         = false;
-                m_MeshNoncollapseVisibleList.push_back(&MergedMesh);
-            }
-        }
+                Node.m_Name = Src.m_Name;
 
-        void RemoveMergedMesh()
-        {
-            if (auto I = findMesh(merged_mesh_name_v); I != -1)
-            {
-                for (auto& E : m_MeshNoncollapseVisibleList)
+                for (int i = 0; i < static_cast<int>(Node.m_Bones.size()); ++i)
                 {
-                    if (E == &m_MeshList[I])
-                    {
-                        m_MeshNoncollapseVisibleList.erase(m_MeshNoncollapseVisibleList.begin() + static_cast<int>(&E - m_MeshNoncollapseVisibleList.data()));
-                        break;
-                    }
+                    bool bStillAChild = false;
+                    for (auto& SrcChild : Src.m_Children)
+                        if (SrcChild.m_Name == Node.m_Bones[i].m_Name) { bStillAChild = true; break; }
+                    if (bStillAChild) continue;
+
+                    Messages.push_back(std::format("WARNING: Bone [{}] no longer found under its parent in the imported skeleton - removing its override.", Node.m_Bones[i].m_Name));
+                    Node.m_Bones.erase(Node.m_Bones.begin() + i);
+                    --i;
                 }
 
-                m_MeshList.erase(m_MeshList.begin() + I);
-            }
+                for (auto& SrcChild : Src.m_Children)
+                {
+                    bone* pChild = FindChildBone(Node, SrcChild.m_Name);
+                    if (!pChild)
+                    {
+                        Node.m_Bones.push_back(bone{ .m_Name = SrcChild.m_Name });
+                        pChild = &Node.m_Bones.back();
+                    }
+                    Reconcile(*pChild, SrcChild);
+                }
+            };
+
+            if (!Details.m_RootBone.m_Name.empty())
+                Reconcile(m_RootBone, Details.m_RootBone);
+
+            return Messages;
         }
 
-        std::wstring                                m_ImportAsset                   = {};
-        pre_transform                               m_PreTranslation                = {};
-        bool                                        m_bMergeMeshes                  = true;
-        bool                                        m_bHideCopasedMeshes            = true;
-        std::vector<mesh>                           m_MeshList                      = {};
-        std::vector<xrsc::material_instance_ref>    m_MaterialInstRefList           = {};
-        std::vector<std::string>                    m_MaterialInstNamesList         = {};
-        std::vector<mesh*>                          m_MeshNoncollapseVisibleList    = {};
+        std::wstring                m_ImportAsset   = {};
+        transform                    m_PreTransform  = {};    // Author-time scale/origin correction applied before compiling (imported skeletons are often at the wrong scale/pivot).
+        bone                         m_RootBone      = {};    // A skeleton has exactly one root (matches the existing runtime convention: bone 0 is always the sole root) - reached through this field rather than through someone else's m_Bones, but otherwise an ordinary `bone`, same shape as any other.
+        std::vector<mask_group>     m_MaskGroups    = {};
 
         XPROPERTY_VDEF
-        ( "GeomStatic", descriptor
-        , obj_member<"ImportAsset",         &descriptor::m_ImportAsset, member_ui<std::wstring>::file_dialog<mesh_filter_v, true, 1> >
-        , obj_member<"PreTranslation",      &descriptor::m_PreTranslation >
-        , obj_member<"bMergeMeshes",        +[](descriptor& O, bool bRead, bool& Value)
-            {
-                if (bRead) Value = O.m_bMergeMeshes;
-                else
-                {
-                    if (Value) O.AddMergedMesh();
-                    else       O.RemoveMergedMesh();
-                    O.m_bMergeMeshes = Value;
-                }
-            }>
-
-        , obj_member<"bHideCopasedMeshes", +[](descriptor& O, bool bRead, bool& Value )
-            {
-                if (bRead) Value = O.m_bHideCopasedMeshes;
-                else
-                {
-                    if (Value)
-                    {
-                        O.m_MeshNoncollapseVisibleList.clear();
-                        for (auto& E : O.m_MeshList)
-                        {
-                            if (E.m_bMerge == false || E.m_OriginalName == merged_mesh_name_v)
-                                O.m_MeshNoncollapseVisibleList.push_back(&E);
-                        }
-                    }
-
-                    O.m_bHideCopasedMeshes = Value;
-                }
-            }, member_dynamic_flags < +[](const descriptor& O)
-            {
-                xproperty::flags::type Flags = {};
-                Flags.m_bDontShow = !O.m_bMergeMeshes;
-                return Flags;
-            } >>
-        , obj_member<"MeshList",            &descriptor::m_MeshList, member_dynamic_flags<+[](const descriptor& O)
-            {
-                xproperty::flags::type Flags = {};
-                Flags.m_bShowReadOnly   = false;
-                Flags.m_bDontShow       = O.m_bMergeMeshes && O.m_bHideCopasedMeshes;
-                return Flags;
-            } >>
-        , obj_member<"MaterialInstNames", &descriptor::m_MaterialInstNamesList, member_flags<flags::DONT_SHOW>>
-        , obj_member<"MeshListNonCollapse", &descriptor::m_MeshNoncollapseVisibleList, member_dynamic_flags<+[](const descriptor& O)
-            {
-                xproperty::flags::type Flags = {};
-                Flags.m_bShowReadOnly   = false;
-                Flags.m_bDontShow       = !O.m_bHideCopasedMeshes || !O.m_bMergeMeshes;
-                Flags.m_bDontSave       = true;
-                return Flags;
-            }>>
-
-        , obj_member<"MaterialInstance",    &descriptor::m_MaterialInstRefList, member_ui_open<true> >
+        ( "Skeleton", descriptor
+        , obj_member<"ImportAsset",     &descriptor::m_ImportAsset, member_ui<std::wstring>::file_dialog<mesh_filter_v, true, 1> >
+        , obj_member<"PreTransform",    &descriptor::m_PreTransform >
+        , obj_member<"RootBone",        &descriptor::m_RootBone >
+        , obj_member<"MaskGroups",      &descriptor::m_MaskGroups >
         )
     };
     XPROPERTY_VREG(descriptor)
@@ -230,7 +223,7 @@ namespace xgeom_static
 
         const char* ResourceTypeName(void) const noexcept override
         {
-            return "GeomStatic";
+            return "Skeleton";
         }
 
         const xproperty::type::object& ResourceXPropertyObject(void) const noexcept override
