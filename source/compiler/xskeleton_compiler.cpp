@@ -367,6 +367,7 @@ namespace xskeleton_compiler
                 m_BoneManifest.m_Bones.push_back
                 ( { .m_Name         = Bones[i].m_Name
                   , .m_NameHash     = Hashes[i]
+                  , .m_iParent      = Bones[i].m_iParent
                   , .m_RestScale    = Bones[i].m_BindScale
                   , .m_RestRotX     = Bones[i].m_BindRotation.m_X
                   , .m_RestRotY     = Bones[i].m_BindRotation.m_Y
@@ -376,6 +377,10 @@ namespace xskeleton_compiler
                   }
                 );
             m_BoneManifest.m_NumBones = static_cast<int>(Bones.size());
+
+            m_BoneManifest.m_PreTransformScale       = m_Descriptor.m_PreTransform.m_Scale;
+            m_BoneManifest.m_PreTransformRotationDeg = m_Descriptor.m_PreTransform.m_Rotation;
+            m_BoneManifest.m_PreTransformTranslation = m_Descriptor.m_PreTransform.m_Translation;
 
             std::vector<std::uint16_t> LODCounts;
             BuildLODTable(Bones, LODCounts);
