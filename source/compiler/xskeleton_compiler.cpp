@@ -364,7 +364,17 @@ namespace xskeleton_compiler
             m_BoneManifest.m_Bones.clear();
             m_BoneManifest.m_Bones.reserve(Bones.size());
             for (int i = 0; i < static_cast<int>(Bones.size()); ++i)
-                m_BoneManifest.m_Bones.push_back({ .m_Name = Bones[i].m_Name, .m_NameHash = Hashes[i] });
+                m_BoneManifest.m_Bones.push_back
+                ( { .m_Name         = Bones[i].m_Name
+                  , .m_NameHash     = Hashes[i]
+                  , .m_RestScale    = Bones[i].m_BindScale
+                  , .m_RestRotX     = Bones[i].m_BindRotation.m_X
+                  , .m_RestRotY     = Bones[i].m_BindRotation.m_Y
+                  , .m_RestRotZ     = Bones[i].m_BindRotation.m_Z
+                  , .m_RestRotW     = Bones[i].m_BindRotation.m_W
+                  , .m_RestPosition = Bones[i].m_BindTranslation
+                  }
+                );
             m_BoneManifest.m_NumBones = static_cast<int>(Bones.size());
 
             std::vector<std::uint16_t> LODCounts;
