@@ -11,6 +11,7 @@ FetchAndPopulate("https://github.com/LIONant-depot/xscheduler.git" "main")
 
 DefineInterfaceComponent(xskeleton_compiler_ "dependencies"
   "source/xskeleton_details.h"
+  "source/xskeleton_bone_manifest.h"
   "source/xskeleton_descriptor.h"
   "source/xskeleton.h"
   "source/Compiler/xskeleton_compiler.cpp"

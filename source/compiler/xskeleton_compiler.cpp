@@ -8,6 +8,7 @@
 #include "../xskeleton_descriptor.h"
 #include "../xskeleton.h"
 #include "../xskeleton_details.h"
+#include "../xskeleton_bone_manifest.h"
 
 #include "dependencies/xproperty/source/xcore/my_properties.cpp"
 #include "dependencies/xmath/source/bridge/xmath_to_xproperty.h"
@@ -357,6 +358,15 @@ namespace xskeleton_compiler
             std::vector<std::uint32_t> Hashes;
             if (auto Err = AssignNameHashesAndCheckCollisions(Bones, Hashes); Err) return Err;
 
+            // Export the final, post-merge bone order/hashes for downstream plugins (e.g.
+            // xanim_package.plugin) that need to bind data to this exact layout without reading our
+            // compiled binary - see xskeleton_bone_manifest.h and onCompile()'s AnimPackage.txt write.
+            m_BoneManifest.m_Bones.clear();
+            m_BoneManifest.m_Bones.reserve(Bones.size());
+            for (int i = 0; i < static_cast<int>(Bones.size()); ++i)
+                m_BoneManifest.m_Bones.push_back({ .m_Name = Bones[i].m_Name, .m_NameHash = Hashes[i] });
+            m_BoneManifest.m_NumBones = static_cast<int>(Bones.size());
+
             std::vector<std::uint16_t> LODCounts;
             BuildLODTable(Bones, LODCounts);
 
@@ -499,6 +509,20 @@ namespace xskeleton_compiler
             }
 
             //
+            // Export the bone manifest for downstream plugins (xanim_package.plugin) - named after
+            // the consumer, same convention as xmaterial.plugin's own MaterialInstance.txt export.
+            //
+            {
+                xtextfile::stream File;
+                if (auto Err = File.Open(false, std::format(L"{}\\AnimPackage.txt", m_ResourceLogPath), xtextfile::file_type::TEXT); Err)
+                    return xerr::create_f<state, "Failed while opening AnimPackage.txt so it can't be saved">(Err);
+
+                xproperty::settings::context C{};
+                if (auto Err = xproperty::sprop::serializer::Stream(File, m_BoneManifest, C); Err)
+                    return xerr::create_f<state, "Failed while serializing AnimPackage.txt">(Err);
+            }
+
+            //
             // Export
             //
             int Count = 0;
@@ -530,8 +554,9 @@ namespace xskeleton_compiler
             }
         }
 
-        xskeleton_desc::details      m_Details;
-        xskeleton_desc::descriptor   m_Descriptor;
+        xskeleton_desc::details        m_Details;
+        xskeleton_desc::descriptor     m_Descriptor;
+        xskeleton_desc::bone_manifest  m_BoneManifest;
 
         xskeleton::skeleton          m_FinalSkeleton;
         xraw3d::anim                 m_Skeleton;
