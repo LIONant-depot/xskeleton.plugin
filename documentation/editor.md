@@ -38,6 +38,7 @@ line. Names, paths and values are base64.
 | `ListLayers` | the mask layers |
 | `SelectBones -Bones [-Add true]`, `ClearSelection` | the selection (view state) |
 | `ListProperties`, `SetProperty`, `ListPreview`, `SetPreview` | descriptor properties (undoable) and the view settings |
+| `ListOp -Path -Op Insert\|Delete\|Move -Index n [-ToIndex n]` | inserts, deletes or moves an element in the middle of a 1D array property (undoable); ordinal keys only |
 | `Save`, `Compile`, `Undo`, `Redo` | |
 | `CompileStatus [-Lines n]` | how the last compile went: state, unsaved changes, validation errors, the end of the log |
 | `SetCamera [-Yaw -Pitch -Distance -Target x,y,z]`, `GetCamera`, `FrameSubject` | the preview camera (degrees), read back, or refitted to the subject (view state, not undoable) |
