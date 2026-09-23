@@ -202,10 +202,19 @@ namespace xskeleton_editor
             }
         }
 
-        // Sizes the view to the panel, frames the subject when asked to, and places the camera
-        void UpdateView(float ViewW, float ViewH) noexcept
+        // Sizes the view to the panel, frames the subject when asked to, and places the camera. Viewport
+        // is the panel's ABSOLUTE on-screen rect (matching the original E23 example exactly - Min is the
+        // panel's own screen position), not a zero-based one - RayFromScreen takes its own Viewport.Min
+        // into account internally, so a zero-based viewport paired with pre-subtracted mouse coords should
+        // be equivalent in theory, but matching the proven-working original exactly, byte for byte, is the
+        // reliable move over re-deriving equivalence by hand a second time.
+        void UpdateView(const ImVec2& Min, float ViewW, float ViewH) noexcept
         {
-            m_View.setViewport({ 0, 0, std::max(static_cast<int>(ViewW), 1), std::max(static_cast<int>(ViewH), 1) });
+            m_View.setViewport({ static_cast<int>(Min.x), static_cast<int>(Min.y), static_cast<int>(Min.x + ViewW), static_cast<int>(Min.y + ViewH) });
+            // View defaults to aspect 1 (square). FOV projection uses ScaleX = -Focal/aspect, so a
+            // non-square panel must get the real W/H here or the projected scene (and any screen math
+            // that shares it) drifts as the dock is resized.
+            m_View.setAspect(ViewW / ViewH);
             if (m_bReframe)
             {
                 m_bReframe = false;

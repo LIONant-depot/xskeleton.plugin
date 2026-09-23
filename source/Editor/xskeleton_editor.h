@@ -975,15 +975,19 @@ namespace xskeleton_editor
             const auto& Src = m_Settings.m_Pose == pose_mode::BIND ? m_WorldBind : m_WorldFrozen;
             m_Scaled = Src;
             for (auto& W : m_Scaled) W.m_Position = W.m_Position * Scale;
-            m_Scene.UpdateView(Avail.x, Avail.y);
+            m_Scene.UpdateView(Min, Avail.x, Avail.y);
 
-            // Hover and click: a ray from the mouse against the bones' solid shapes
+            // Hover and click: a ray from the mouse against the bones' solid shapes. Matches the original
+            // E23 example exactly: RAW mouse position (not pre-subtracted by Min), against a view whose
+            // viewport is the panel's own ABSOLUTE screen rect (set in UpdateView above) - RayFromScreen
+            // uses Viewport.Min/Max internally to find its own center, so it needs the SAME coordinate
+            // space the mouse position is already in.
             const ImVec2 Mouse = ImGui::GetIO().MousePos;
             const bool bOrbiting = ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseDown(ImGuiMouseButton_Middle);
             if (bHovered && !bOrbiting)
             {
+                const auto Dir = m_Scene.m_View.RayFromScreen(Mouse.x, Mouse.y);
                 float T = 0;
-                const auto Dir = m_Scene.m_View.RayFromScreen(Mouse.x - Min.x, Mouse.y - Min.y);
                 int iHit = -1;
                 PickWedge(*pSkeleton, m_Scaled, m_Scene.m_View.getPosition(), Dir, m_Scene.m_Radius, iHit, T);
                 m_iHovered = iHit;
@@ -1019,16 +1023,31 @@ namespace xskeleton_editor
             {
                 const xmath::fvec4 Clip = m_Scene.m_View.getW2C() * xmath::fvec4(P, 1.0f);
                 if (Clip.m_W <= 1.0e-4f) return false;
-                Out = ImVec2(Min.x + (Clip.m_X / Clip.m_W * 0.5f + 0.5f) * Size.x, Min.y + (1.0f - (Clip.m_Y / Clip.m_W * 0.5f + 0.5f)) * Size.y);
+                // NOT "1.0f - NDC.y": getV2CScales() (feeding into getW2C()'s own projection) already
+                // flips Y for this engine's Vulkan convention so NDC comes out Y-up - flipping again here
+                // double-inverts it, the same bug the original example's own getC2S() carries an explicit
+                // comment warning against. Confirmed live against the original: this put high-world-Y
+                // bones' labels at the bottom of the screen instead of the top.
+                Out = ImVec2(Min.x + (Clip.m_X / Clip.m_W * 0.5f + 0.5f) * Size.x, Min.y + (Clip.m_Y / Clip.m_W * 0.5f + 0.5f) * Size.y);
                 return true;
             };
-            const int nBones = std::min<int>(int(Skeleton.getBones().size()), 200);
+            const auto Bones = Skeleton.getBones();
+            const int nBones = std::min<int>(int(Bones.size()), 200);
             for (int i = 0; i < nBones; ++i)
             {
                 const bool bShow = m_Settings.m_bAlwaysShowNames || m_Selected.count(i) || i == m_iHovered;
                 if (!bShow) continue;
+                // The bone's own wedge is drawn as the segment from ITS PARENT's joint to its own joint
+                // (see BuildWedgeGeometry's A/B, xskeleton_editor_view.h:600-601) - labeling at either
+                // endpoint (this bone's own position, or its parent's) reads as ambiguous about which
+                // segment the name belongs to when several bones meet at a joint. The midpoint of that
+                // same segment is unambiguous. A parentless (root) bone has no segment of its own (it
+                // only gets a marker, not a wedge - see the "only parentless bones get a marker" comment
+                // nearby) so it falls back to its own joint position.
+                const int  iParent = Bones[i].m_iParent;
+                const auto Anchor  = iParent < 0 ? m_Scaled[i].m_Position : (m_Scaled[iParent].m_Position + m_Scaled[i].m_Position) * 0.5f;
                 ImVec2 Screen;
-                if (!Project(m_Scaled[i].m_Position, Screen)) continue;
+                if (!Project(Anchor, Screen)) continue;
                 const auto Name = EffectiveName(Skeleton, i);
                 const bool bStrong = m_Selected.count(i) || i == m_iHovered;
                 pDraw->AddText(ImVec2(Screen.x + 6, Screen.y - 6), bStrong ? IM_COL32(255, 255, 255, 255) : IM_COL32(220, 220, 220, 150), Name.c_str());
