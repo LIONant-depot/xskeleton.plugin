@@ -18,10 +18,15 @@ xresource::loader< xrsc::skeleton_type_guid_v >::data_type* xresource::loader< x
     std::wstring           Path       = Mgr.getResourcePath(GUID, type_name_v);
     xskeleton::skeleton*   pSkeleton  = nullptr;
 
+    // A missing/not-yet-compiled resource is an expected, recoverable case (same reasoning as
+    // xtexture_xgpu_rsc_loader.cpp's identical fix) - every caller already handles getResource()
+    // returning null. Unlike the geometry loaders, nothing here dereferences pSkeleton before
+    // returning it, so this was never actually unsafe in Release - just an unconditional Debug abort
+    // for an ordinary, expected condition.
     xserializer::stream Stream;
     if (auto Err = Stream.Load(Path, pSkeleton); Err)
     {
-        assert(false);
+        return nullptr;
     }
 
     return pSkeleton;
