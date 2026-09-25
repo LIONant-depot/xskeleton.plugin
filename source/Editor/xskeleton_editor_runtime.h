@@ -49,6 +49,7 @@ namespace xskeleton_editor
     struct runtime : scene
     {
         xgpu::tools::view           m_LightView;
+        xgpu::vertex_descriptor     m_FillVD;   // TRIANGLE_LIST, e19::draw_vert-sized - NOT m_GridVD, whose stride is xeditor_tools::grid's own smaller vertex type
         xgpu::vertex_descriptor     m_ShadowVD;
         xgpu::buffer                m_FillVerts;
         xgpu::pipeline              m_FillPipeline, m_ShadowPipeline;
@@ -72,13 +73,20 @@ namespace xskeleton_editor
 
             // The fill: triangles, alpha blended, tested against the depth but not written to it (the fills are drawn far to near, so one blends over another)
             {
+                auto Attributes = std::array
+                { xgpu::vertex_descriptor::attribute{ .m_Offset = offsetof(e19::draw_vert, m_X),     .m_Format = xgpu::vertex_descriptor::format::FLOAT_3D }
+                , xgpu::vertex_descriptor::attribute{ .m_Offset = offsetof(e19::draw_vert, m_U),     .m_Format = xgpu::vertex_descriptor::format::FLOAT_2D }
+                , xgpu::vertex_descriptor::attribute{ .m_Offset = offsetof(e19::draw_vert, m_Color), .m_Format = xgpu::vertex_descriptor::format::UINT8_4D_NORMALIZED }
+                };
+                if (!Ok(Device.Create(m_FillVD, xgpu::vertex_descriptor::setup{ .m_VertexSize = sizeof(e19::draw_vert), .m_Attributes = Attributes }))) return false;
+
                 xgpu::shader Vert, Frag;
                 if (!Shader(Vert, xgpu::shader::type::bit::VERTEX,   g_FillVertShader, std::size(g_FillVertShader))) return false;
                 if (!Shader(Frag, xgpu::shader::type::bit::FRAGMENT, g_FillFragShader, std::size(g_FillFragShader))) return false;
                 auto Samplers = std::array{ xgpu::pipeline::sampler{}, xgpu::pipeline::sampler{ .m_AddressMode = std::array{ xgpu::pipeline::sampler::address_mode::CLAMP, xgpu::pipeline::sampler::address_mode::CLAMP, xgpu::pipeline::sampler::address_mode::CLAMP } } };
                 auto Shaders  = std::array<const xgpu::shader*, 2>{ &Frag, &Vert };
                 if (!Ok(Device.Create(m_FillPipeline, xgpu::pipeline::setup
-                    { .m_VertexDescriptor = m_GridVD, .m_Shaders = Shaders, .m_PushConstantsSize = sizeof(wedge_fill_push_constants), .m_Samplers = Samplers
+                    { .m_VertexDescriptor = m_FillVD, .m_Shaders = Shaders, .m_PushConstantsSize = sizeof(wedge_fill_push_constants), .m_Samplers = Samplers
                     , .m_DepthStencil = { .m_bDepthWriteEnable = false }, .m_Blend = xgpu::pipeline::blend::getAlphaOriginal() }))) return false;
                 auto Bindings = std::array{ xgpu::pipeline_instance::sampler_binding{ m_White }, xgpu::pipeline_instance::sampler_binding{ m_ShadowMap } };
                 if (!Ok(Device.Create(m_FillInstance, { .m_PipeLine = m_FillPipeline, .m_SamplersBindings = Bindings }))) return false;
