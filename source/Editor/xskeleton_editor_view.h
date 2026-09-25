@@ -8,6 +8,7 @@
 #include "plugins/xskeleton.plugin/source/xskeleton.h"
 #include "source/Examples/E19_MaterialEditor/E19_mesh_manager.h"
 #include "dependencies/imgui/imgui.h"
+#include "dependencies/xeditor_tools/src/xeditor_tools_picking.h"
 
 #include <algorithm>
 #include <array>
@@ -732,53 +733,10 @@ namespace xskeleton_editor
     // bone (4 near: A-ring[k]-ring[k+1], 4 far: B-ring[k+1]-ring[k]), closest hit wins.
     //---------------------------------------------------------------------------
 
-    inline bool RayTriangleIntersect(const xmath::fvec3& Origin, const xmath::fvec3& Dir, const xmath::fvec3& V0, const xmath::fvec3& V1, const xmath::fvec3& V2, float& OutT)
-    {
-        constexpr float Epsilon = 1.0e-6f;
-
-        const xmath::fvec3 Edge1 = V1 - V0;
-        const xmath::fvec3 Edge2 = V2 - V0;
-        const xmath::fvec3 H     = Dir.Cross(Edge2);
-        const float        A     = Edge1.Dot(H);
-        if (std::fabs(A) < Epsilon) return false;
-
-        const float        F = 1.0f / A;
-        const xmath::fvec3  S = Origin - V0;
-        const float         U = F * S.Dot(H);
-        if (U < 0.0f || U > 1.0f) return false;
-
-        const xmath::fvec3 Q = S.Cross(Edge1);
-        const float        V = F * Dir.Dot(Q);
-        if (V < 0.0f || U + V > 1.0f) return false;
-
-        const float T = F * Edge2.Dot(Q);
-        if (T <= Epsilon) return false;
-
-        OutT = T;
-        return true;
-    }
-
-    // Generic (Dir need not be unit length - T then matches RayTriangleIntersect's own convention of
-    // "same units as Dir", which is all that matters since both are only ever compared against each
-    // other for the same ray).
-    inline bool RaySphereIntersect(const xmath::fvec3& Origin, const xmath::fvec3& Dir, const xmath::fvec3& Center, float Radius, float& OutT)
-    {
-        const xmath::fvec3 OC = Origin - Center;
-        const float A = Dir.Dot(Dir);
-        if (A < 1.0e-12f) return false;
-        const float B = 2.0f * Dir.Dot(OC);
-        const float C = OC.Dot(OC) - Radius * Radius;
-        const float Disc = B * B - 4.0f * A * C;
-        if (Disc < 0.0f) return false;
-
-        const float SqrtDisc = std::sqrt(Disc);
-        float T = (-B - SqrtDisc) / (2.0f * A);
-        if (T <= 1.0e-6f) T = (-B + SqrtDisc) / (2.0f * A);
-        if (T <= 1.0e-6f) return false;
-
-        OutT = T;
-        return true;
-    }
+    // Moved to dependencies/xeditor_tools/src/xeditor_tools_picking.h - shared with the Level Editor's
+    // own entity picking, factored out from here (this file was their only source before).
+    using xeditor_tools::picking::RayTriangleIntersect;
+    using xeditor_tools::picking::RaySphereIntersect;
 
     inline void PickWedge(const xskeleton::skeleton& Skeleton, const std::vector<bone_world>& World, const xmath::fvec3& Origin, const xmath::fvec3& Dir, float OverallRadius, int& OutBone, float& OutT)
     {
