@@ -15,22 +15,22 @@ namespace xskeleton_editor
     // The fill's own shaders (its push constants carry the shadow matrix) and the light's depth-only pair
     inline constexpr std::uint32_t g_FillVertShader[] =
     {
-        #include "E23_WedgeFill_vert.h"
+        #include "xskeleton_wedge_fill_vert.h"
     };
     inline constexpr std::uint32_t g_FillFragShader[] =
     {
-        #include "E23_WedgeFill_frag.h"
+        #include "xskeleton_wedge_fill_frag.h"
     };
     inline constexpr std::uint32_t g_ShadowVertShader[] =
     {
-        #include "E23_ShadowGeneration_vert.h"
+        #include "xskeleton_shadow_generation_vert.h"
     };
     inline constexpr std::uint32_t g_ShadowFragShader[] =
     {
-        #include "E23_ShadowGeneration_frag.h"
+        #include "xskeleton_shadow_generation_frag.h"
     };
 
-    // Matches E23_WedgeFill_vert/frag.glsl's push constant block: both stages declare all of it, so the fields land at the same offsets
+    // Matches xskeleton_wedge_fill_vert/frag.glsl's push constant block: both stages declare all of it, so the fields land at the same offsets
     struct wedge_fill_push_constants
     {
         xmath::fmat4    m_L2C;

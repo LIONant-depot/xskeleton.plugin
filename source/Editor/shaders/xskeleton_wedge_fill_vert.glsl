@@ -4,7 +4,7 @@
 #extension GL_ARB_shading_language_420pack : enable
 
 // Same transform as draw_vert.glsl, but declares the SAME push_constant block as
-// E23_WedgeFill_frag.glsl (mat4 L2C + mat4 ShadowL2C + float Boost) - xGPU requires every stage in
+// xskeleton_wedge_fill_frag.glsl (mat4 L2C + mat4 ShadowL2C + float Boost) - xGPU requires every stage in
 // a pipeline to declare an identical push-constant layout, and draw_vert.glsl's shorter { mat4 L2C; }
 // block doesn't match, so it can't be reused here (same reason E23_Pick_vert.glsl exists).
 
@@ -16,7 +16,7 @@ layout (std140, push_constant) uniform PushConsts
 {
     mat4  L2C;
     mat4  ShadowL2C; // world space -> light clip/texture space, for self-shadowing (see E21_GridShader_vert.glsl's identical use for the ground plane)
-    float Boost;     // unused here - present only so it lands at the offset E23_WedgeFill_frag.glsl expects
+    float Boost;     // unused here - present only so it lands at the offset xskeleton_wedge_fill_frag.glsl expects
 } pushConsts;
 
 layout(location = 0) out struct { vec4 Color; vec2 UV; vec4 ShadowPos; } Out;

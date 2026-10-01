@@ -7,7 +7,7 @@
 // with each bone (a new name, virtual, deleted, exposed as a socket, its LOD, its weight in each mask layer) is edited in the hierarchy or with
 // commands, all undoable. Hosts include this header and open editors through xeditor::open_resource_editors.
 #include "source/Tools/Editor/xeditor_descriptor_editor.h"
-#include "dependencies/xresource_pipeline_v2/source/editor/E10_Resources.h"
+#include "dependencies/xresource_pipeline_v2/source/editor/xresource_editor_resources.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_scene.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_runtime.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_thumbnail.h"
@@ -385,7 +385,7 @@ namespace xskeleton_editor
 
         std::vector<e19::draw_vert>                             m_Outline, m_Fill;
 
-        session(xresource::full_guid Guid, e10::library::guid LibraryGuid, xgpu::device* pDevice) noexcept
+        session(xresource::full_guid Guid, xresource_editor::library::guid LibraryGuid, xgpu::device* pDevice) noexcept
             : descriptor_editor("Skeleton", Guid, LibraryGuid, pDevice)
             , m_SetBone(m_Undo, m_Document, m_Details), m_MatchLOD(m_Undo, m_Document, m_Details), m_SetMaskWeight(m_Undo, m_Document, m_Details)
             , m_SetPreview(m_Undo, m_Settings), m_ListPreview(m_Undo, m_Settings)
@@ -832,7 +832,7 @@ namespace xskeleton_editor
             m_Scene.HandleInput();
 
             auto* pSkeleton = Skeleton();
-            if (!m_bReady || !pWindow) { ImGui::SetCursorScreenPos(Min); ImGui::TextDisabled("The 3D view needs a GPU device (open from E29)."); return; }
+            if (!m_bReady || !pWindow) { ImGui::SetCursorScreenPos(Min); ImGui::TextDisabled("The 3D view needs a GPU device (open from the editor)."); return; }
             if (!pSkeleton) { ImGui::SetCursorScreenPos(Min); ImGui::TextWrapped("%s", m_ErrorMessage.empty() ? "Nothing to show." : m_ErrorMessage.c_str()); return; }
 
             // "Resize skeleton to 1m" scales the view only, never the asset
@@ -926,7 +926,7 @@ namespace xskeleton_editor
 
     inline const xeditor::auto_register_resource_editor g_Registration
     { xskeleton_desc::resource_type_guid_v
-    , [](xresource::full_guid Guid, e10::library::guid LibraryGuid, xgpu::device* pDevice) -> std::unique_ptr<xeditor::resource_editor>
+    , [](xresource::full_guid Guid, xresource_editor::library::guid LibraryGuid, xgpu::device* pDevice) -> std::unique_ptr<xeditor::resource_editor>
       { return std::make_unique<session>(Guid, LibraryGuid, pDevice); }
     };
 
