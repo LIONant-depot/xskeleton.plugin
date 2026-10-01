@@ -829,6 +829,7 @@ namespace xskeleton_editor
             ImGui::GetWindowDrawList()->AddRectFilled(Min, ImVec2(Min.x + Avail.x, Min.y + Avail.y), IM_COL32(115, 115, 115, 255));
             ImGui::InvisibleButton("##SkeletonViewport", Avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
             const bool bHovered = ImGui::IsItemHovered();
+            xeditor::PreviewGestures();
             m_Scene.HandleInput();
 
             auto* pSkeleton = Skeleton();
