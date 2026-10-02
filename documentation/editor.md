@@ -27,7 +27,7 @@ shadow map with a render pass on the window before the frame's UI is rendered.
 ## Commands
 
 Run as `<resource name>\<Command>`. Bones are named by their raw import name (the compiler matches overrides by it); several are given one per
-line. Names, paths and values are base64.
+line. Names, paths and values are text, in quotes.
 
 | Command | |
 |---|---|

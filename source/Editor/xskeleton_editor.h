@@ -184,7 +184,7 @@ namespace xskeleton_editor
         {
             std::string Text;
             if (!xeditor::cmd_util::GetArg(m_Parser, m_hBones, Text)) return "bad arguments";
-            Out = SplitLines(xeditor::Base64Decode(Text));
+            Out = SplitLines(Text);
             if (Out.empty()) return "no bones named";
             for (auto& Name : Out)
                 if (!FindDetailsBone(m_Details.m_RootBone, Name)) return std::format("no bone '{}' (compile the skeleton first)", Name);
@@ -201,12 +201,12 @@ namespace xskeleton_editor
     struct set_bone_cmd : edit_cmd
     {
         set_bone_cmd(xundo::system& System, xeditor::descriptor_document& Doc, const xskeleton_desc::details& Details) noexcept
-            : edit_cmd(System, Doc, Details, "SetBone", "Edits what the compiler does with bones (undoable). Usage: SetBone -Bones base64(one raw name per line) [-Rename base64] [-Virtual true|false] [-Delete true|false] [-Expose true|false] [-LOD level]")
+            : edit_cmd(System, Doc, Details, "SetBone", "Edits what the compiler does with bones (undoable). Usage: SetBone -Bones \"one raw name per line\" [-Rename \"name\"] [-Virtual true|false] [-Delete true|false] [-Expose true|false] [-LOD level]")
         { RegisterArguments(); }
 
         void RegisterArguments() noexcept override
         {
-            m_hBones   = m_Parser.addOption("Bones",   "Raw import names, one per line, base64",     true,  1);
+            m_hBones   = m_Parser.addOption("Bones",   "Raw import names, one per line",     true,  1);
             m_hRename  = m_Parser.addOption("Rename",  "The compiled name, base64 (empty: none)",     false, 1);
             m_hVirtual = m_Parser.addOption("Virtual", "true: a virtual bone, false: a normal one",   false, 1);
             m_hDelete  = m_Parser.addOption("Delete",  "true: leave the bone out of the skeleton",    false, 1);
@@ -241,7 +241,7 @@ namespace xskeleton_editor
             for (auto& Name : Names)
             {
                 auto& B = FindOrCreateBoneOverride(D, Name);
-                if (bRename)  B.m_Rename      = xeditor::Base64Decode(Rename);
+                if (bRename)  B.m_Rename      = Rename;
                 if (bVirtual) B.m_Type        = bV ? xskeleton_desc::bone_type::VIRTUAL : xskeleton_desc::bone_type::NORMAL;
                 if (bDelete)  B.m_bDeleteBone = bD;
                 if (bExpose)  B.m_bExpose     = bE;
@@ -262,9 +262,9 @@ namespace xskeleton_editor
     struct match_lod_cmd : edit_cmd
     {
         match_lod_cmd(xundo::system& System, xeditor::descriptor_document& Doc, const xskeleton_desc::details& Details) noexcept
-            : edit_cmd(System, Doc, Details, "MatchLOD", "Gives every descendant of the bones the bone's own LOD (undoable). Usage: MatchLOD -Bones base64(one raw name per line)")
+            : edit_cmd(System, Doc, Details, "MatchLOD", "Gives every descendant of the bones the bone's own LOD (undoable). Usage: MatchLOD -Bones \"one raw name per line\"")
         { RegisterArguments(); }
-        void RegisterArguments() noexcept override { m_hBones = m_Parser.addOption("Bones", "Raw import names, one per line, base64", true, 1); }
+        void RegisterArguments() noexcept override { m_hBones = m_Parser.addOption("Bones", "Raw import names, one per line", true, 1); }
 
         std::string Redo() noexcept override
         {
@@ -286,12 +286,12 @@ namespace xskeleton_editor
     struct set_mask_weight_cmd : edit_cmd
     {
         set_mask_weight_cmd(xundo::system& System, xeditor::descriptor_document& Doc, const xskeleton_desc::details& Details) noexcept
-            : edit_cmd(System, Doc, Details, "SetMaskWeight", "Sets the weight (0 to 1) of bones in a mask layer (undoable). Usage: SetMaskWeight -Layer base64(name) -Bones base64(one raw name per line) -Weight w [-Children true]")
+            : edit_cmd(System, Doc, Details, "SetMaskWeight", "Sets the weight (0 to 1) of bones in a mask layer (undoable). Usage: SetMaskWeight -Layer \"name\" -Bones \"one raw name per line\" -Weight w [-Children true]")
         { RegisterArguments(); }
         void RegisterArguments() noexcept override
         {
-            m_hLayer    = m_Parser.addOption("Layer",    "The mask layer's name, base64",             true,  1);
-            m_hBones    = m_Parser.addOption("Bones",    "Raw import names, one per line, base64",     true,  1);
+            m_hLayer    = m_Parser.addOption("Layer",    "The mask layer's name",             true,  1);
+            m_hBones    = m_Parser.addOption("Bones",    "Raw import names, one per line",     true,  1);
             m_hWeight   = m_Parser.addOption("Weight",   "0 to 1",                                     true,  1);
             m_hChildren = m_Parser.addOption("Children", "true: their descendants get it too",         false, 1);
         }
@@ -307,7 +307,6 @@ namespace xskeleton_editor
             if (!xeditor::cmd_util::GetArg(m_Parser, m_hLayer, Layer) || !xeditor::cmd_util::GetArg(m_Parser, m_hWeight, Weight)
              || std::from_chars(Weight.data(), Weight.data() + Weight.size(), W).ec != std::errc() || W < 0.0f || W > 1.0f) return "SetMaskWeight: Weight takes a number from 0 to 1";
             auto& D = Desc();
-            Layer = xeditor::Base64Decode(Layer);
             const int iGroup = D.findMaskGroup(Layer);
             if (iGroup < 0) return std::format("SetMaskWeight: no mask layer '{}'", Layer);
             const bool bChildren = xeditor::cmd_util::GetArg(m_Parser, m_hChildren, Children) && Children == "true";
@@ -346,7 +345,7 @@ namespace xskeleton_editor
             {
                 if (m_Kind == kind::select_bones)
                 {
-                    m_hBones = m_Parser.addOption("Bones", "Raw import names, one per line, base64", true, 1);
+                    m_hBones = m_Parser.addOption("Bones", "Raw import names, one per line", true, 1);
                     m_hAdd   = m_Parser.addOption("Add",   "true: keep the current selection and add to it", false, 1);
                 }
             }
@@ -391,7 +390,7 @@ namespace xskeleton_editor
             , m_SetPreview(m_Undo, m_Settings), m_ListPreview(m_Undo, m_Settings)
             , m_CameraCmds(m_Undo, m_Scene.Camera())
             , m_ListBones      (m_Undo, *this, query_cmd::kind::list_bones,      "ListBones",      "Every compiled bone: index, name, raw name, parent, flags, LOD and its override. Usage: ListBones")
-            , m_SelectBones    (m_Undo, *this, query_cmd::kind::select_bones,    "SelectBones",    "Selects bones in the view. Usage: SelectBones -Bones base64(one raw name per line) [-Add true]")
+            , m_SelectBones    (m_Undo, *this, query_cmd::kind::select_bones,    "SelectBones",    "Selects bones in the view. Usage: SelectBones -Bones \"one raw name per line\" [-Add true]")
             , m_ClearSelection (m_Undo, *this, query_cmd::kind::clear_selection, "ClearSelection", "Selects no bone. Usage: ClearSelection")
             , m_ListLayers     (m_Undo, *this, query_cmd::kind::list_layers,     "ListLayers",     "The mask layers and how many bones each weights. Usage: ListLayers")
         {
@@ -589,7 +588,7 @@ namespace xskeleton_editor
             std::string Text;
             if (iBone != -1 && m_Selected.count(iBone) && m_Selected.size() > 1) { for (int i : m_Selected) Text += RawName(Skeleton, i) + "\n"; }
             else Text = Raw;
-            return xeditor::Base64Encode(Text);
+            return xeditor::Quote(Text);
         }
 
         std::string RunQuery(query_cmd& Cmd) noexcept
@@ -620,7 +619,7 @@ namespace xskeleton_editor
                 if (!xeditor::cmd_util::GetArg(Cmd.m_Parser, Cmd.m_hBones, Text)) return "SelectBones: bad arguments";
                 const bool bAdd = xeditor::cmd_util::GetArg(Cmd.m_Parser, Cmd.m_hAdd, Add) && Add == "true";
                 std::set<int> Found;
-                for (auto& Name : SplitLines(xeditor::Base64Decode(Text)))
+                for (auto& Name : SplitLines(Text))
                 {
                     int iFound = -1;
                     for (int i = 0; i < int(pSkeleton->getBones().size()) && iFound < 0; ++i) if (RawName(*pSkeleton, i) == Name || DisplayName(*pSkeleton, i) == Name) iFound = i;
@@ -699,7 +698,7 @@ namespace xskeleton_editor
                 const bool bEnter = ImGui::InputText("##rename", Buffer, sizeof(Buffer), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
                 if (bEnter || ImGui::IsItemDeactivatedAfterEdit())
                 {
-                    Pending = std::format("SetBone -Bones {} -Rename {}", xeditor::Base64Encode(Raw), xeditor::Base64Encode(std::string(Buffer)));
+                    Pending = std::format("SetBone -Bones {} -Rename {}", xeditor::Quote(Raw), xeditor::Quote(std::string(Buffer)));
                     m_RenamingBone.clear();
                 }
                 else if (ImGui::IsItemDeactivated()) m_RenamingBone.clear();
@@ -722,7 +721,7 @@ namespace xskeleton_editor
                 if (ImGui::MenuItem(bExpose  ? "Unexpose Socket"     : "Expose as Socket"))     Pending = std::format("SetBone -Bones {} -Expose {}",  Targets, bExpose  ? "false" : "true");
                 if (ImGui::MenuItem("Match Children's LOD to This Bone")) Pending = std::format("MatchLOD -Bones {}", Targets);
                 if (iLayer >= 0 && ImGui::MenuItem("Match Children's Active Layer Weight to This Bone"))
-                    Pending = std::format("SetMaskWeight -Layer {} -Bones {} -Weight {} -Children true", xeditor::Base64Encode(D.m_MaskGroups[iLayer].m_Name), Targets, GetMaskWeight(D, iLayer, Raw));
+                    Pending = std::format("SetMaskWeight -Layer {} -Bones {} -Weight {} -Children true", xeditor::Quote(D.m_MaskGroups[iLayer].m_Name), Targets, GetMaskWeight(D, iLayer, Raw));
                 ImGui::EndPopup();
             }
             ImGui::PopID();
@@ -762,7 +761,7 @@ namespace xskeleton_editor
                 ImGui::PushID(Raw.c_str());
                 ImGui::SetNextItemWidth(-FLT_MIN);
                 if (ImGui::InputFloat("##mask", &Weight, 0.0f, 0.0f, "%.2f"))
-                    Pending = std::format("SetMaskWeight -Layer {} -Bones {} -Weight {}", xeditor::Base64Encode(D.m_MaskGroups[iLayer].m_Name), EditTargets(Skeleton, iBone, Raw), std::clamp(Weight, 0.0f, 1.0f));
+                    Pending = std::format("SetMaskWeight -Layer {} -Bones {} -Weight {}", xeditor::Quote(D.m_MaskGroups[iLayer].m_Name), EditTargets(Skeleton, iBone, Raw), std::clamp(Weight, 0.0f, 1.0f));
                 ImGui::PopID();
             }
 
