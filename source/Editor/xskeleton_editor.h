@@ -207,7 +207,7 @@ namespace xskeleton_editor
         void RegisterArguments() noexcept override
         {
             m_hBones   = m_Parser.addOption("Bones",   "Raw import names, one per line",     true,  1);
-            m_hRename  = m_Parser.addOption("Rename",  "The compiled name, base64 (empty: none)",     false, 1);
+            m_hRename  = m_Parser.addOption("Rename",  "The compiled name (empty: none)",     false, 1);
             m_hVirtual = m_Parser.addOption("Virtual", "true: a virtual bone, false: a normal one",   false, 1);
             m_hDelete  = m_Parser.addOption("Delete",  "true: leave the bone out of the skeleton",    false, 1);
             m_hExpose  = m_Parser.addOption("Expose",  "true: the bone is a socket",                  false, 1);
