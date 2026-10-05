@@ -481,6 +481,11 @@ namespace xskeleton_compiler
             // Load the source data
             //
             displayProgressBar("Importing Skeleton", 0);
+
+            // The source file is a dependency of this resource, registered BEFORE loading it (a broken link still shows as a dependent of the file): it is what the Assets tab counts
+            // (the #N of the file) and lists (Find Resource / Open Resource), and what makes a change of the file compile this resource again.
+            m_Dependencies.m_Assets.push_back(m_Descriptor.m_ImportAsset);
+
             if (auto Err = LoadRaw(std::format(L"{}/{}", m_ProjectPaths.m_Project, m_Descriptor.m_ImportAsset)); Err)
                 return Err;
             displayProgressBar("Importing Skeleton", 1);
