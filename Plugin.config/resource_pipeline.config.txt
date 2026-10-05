@@ -2,10 +2,12 @@
 // New Types
 < s32:d u32:g s16:C u16:H s8:c u8:h f32:f f64:F string:s wstring:S u64:G s64:D bool:c enum:s >
 
-[ xProperties : 9 ]
+[ xProperties : 11 ]
 { Name:s                            Value:?                   }
 //--------------------------------  -------------------------
   "PipelinePlugin/TypeName"                  ;string "Skeleton"    
+  "PipelinePlugin/Group"                     ;string "Animation"
+  "PipelinePlugin/Description"               ;string "The bones of a character: what a skinned mesh and its animations are driven by."
   "PipelinePlugin/FileExtension"             ;wstring "xskeleton"               
   "PipelinePlugin/TypeGUID/Value"            ;u64    #F5D3BE1ED860ABF7
   "PipelinePlugin/IconPaths[]"                      ;s64    1
