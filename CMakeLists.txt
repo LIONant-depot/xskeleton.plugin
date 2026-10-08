@@ -15,11 +15,11 @@ FetchContent_MakeAvailable(xcmake_tools)
 include(${CMAKE_BINARY_DIR}/_deps/xcmake_tools/Common.cmake)
 
 add_executable(${TARGET_PROJECT}
-  "source/Compiler/main.cpp"
+  "source/compiler/main.cpp"
 )
 
 source_group("Skeleton_Compiler" FILES
-  "source/Compiler/main.cpp"
+  "source/compiler/main.cpp"
 )
 
 # Allow access to other plugins
@@ -29,13 +29,15 @@ add_subdirectory("build/dependency" "${CMAKE_CURRENT_BINARY_DIR}/xskeleton_compi
 
 
 # copy the assimp dll into the project
-file(COPY ${CMAKE_SOURCE_DIR}/dependencies/assimp/BINARIES/Win32/bin/Release/assimp-vc143-mt.dll
-     DESTINATION ${CMAKE_BINARY_DIR})
+if(WIN32) # assimp dll (Linux links assimp statically, see xraw3d)
+  file(COPY ${CMAKE_SOURCE_DIR}/dependencies/assimp/BINARIES/Win32/bin/Release/assimp-vc143-mt.dll
+       DESTINATION ${CMAKE_BINARY_DIR})
 
-file(COPY ${CMAKE_SOURCE_DIR}/dependencies/assimp/BINARIES/Win32/bin/Release/assimp-vc143-mt.dll
-     DESTINATION ${CMAKE_BINARY_DIR}/Release)
+  file(COPY ${CMAKE_SOURCE_DIR}/dependencies/assimp/BINARIES/Win32/bin/Release/assimp-vc143-mt.dll
+       DESTINATION ${CMAKE_BINARY_DIR}/Release)
 
-file(COPY ${CMAKE_SOURCE_DIR}/dependencies/assimp/BINARIES/Win32/bin/Release/assimp-vc143-mt.dll
-     DESTINATION ${CMAKE_BINARY_DIR}/Debug)
+  file(COPY ${CMAKE_SOURCE_DIR}/dependencies/assimp/BINARIES/Win32/bin/Release/assimp-vc143-mt.dll
+       DESTINATION ${CMAKE_BINARY_DIR}/Debug)
+endif()
 
 ProcessComponents()
