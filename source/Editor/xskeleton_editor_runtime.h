@@ -35,8 +35,8 @@ namespace xskeleton_editor
     {
         xmath::fmat4    m_L2C;
         xmath::fmat4    m_ShadowL2C;
-        float           m_Boost;
     };
+    static_assert(sizeof(wedge_fill_push_constants) <= 128, "Vulkan only guarantees 128 bytes of push constants");
 
     struct shadow_generation_push_constants
     {
@@ -153,7 +153,7 @@ namespace xskeleton_editor
             CmdBuffer.setPipelineInstance(m_FillInstance);
             CmdBuffer.setBuffer(m_LineIndices);
             CmdBuffer.setBuffer(m_FillVerts);
-            CmdBuffer.setPushConstants(wedge_fill_push_constants{ .m_L2C = m_View.getW2C(), .m_ShadowL2C = ClipToTextureSpace() * m_ShadowL2C, .m_Boost = g_WedgeFillBoost });
+            CmdBuffer.setPushConstants(wedge_fill_push_constants{ .m_L2C = m_View.getW2C(), .m_ShadowL2C = ClipToTextureSpace() * m_ShadowL2C });
             CmdBuffer.Draw(static_cast<int>(m_nFill));
         }
     };

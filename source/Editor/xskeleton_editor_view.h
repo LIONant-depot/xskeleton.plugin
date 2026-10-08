@@ -323,7 +323,8 @@ namespace xskeleton_editor
 
     // Compensates for the wedge fill's own alpha blend diluting brightness against the gray floor
     // (FillAlphaScale ~0.55 means the true color only ever contributes ~55% of what reaches the
-    // screen) - see xskeleton_wedge_fill_frag.glsl's own comment. Tunable in one place.
+    // screen) - see xskeleton_wedge_fill_frag.glsl's own comment. The shader has its own copy (WedgeFillBoost):
+    // keep both the same.
     inline constexpr float g_WedgeFillBoost   = 1.8f;
 
     inline void EmitSegment(std::vector<e19::draw_vert>& Verts, const xmath::fvec3& A, const xmath::fvec3& B, std::uint32_t ColorA, std::uint32_t ColorB)

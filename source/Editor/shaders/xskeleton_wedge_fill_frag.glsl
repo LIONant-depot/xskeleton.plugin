@@ -3,7 +3,7 @@
 #extension GL_ARB_shading_language_420pack : enable
 
 // Same as draw_frag.glsl (texture*color, then gamma-decode back from the vertex shader's linear
-// encoding), but with an extra multiply by pushConsts.Boost before the alpha blend, plus a
+// encoding), but with an extra multiply by WedgeFillBoost before the alpha blend, plus a
 // self-shadow term (one bone's solid fill darkening another's). The PCF/bounds-check logic below is
 // a straight copy of E21_GridShader_frag.glsl's ShadowPCF - small enough not to be worth sharing
 // across files, but keep the two in sync if either gets a correctness fix.
@@ -27,8 +27,11 @@ layout (std140, push_constant) uniform PushConsts
 {
     mat4  L2C;         // unused here - present only so ShadowL2C/Boost land at the offsets the C++ side expects
     mat4  ShadowL2C;   // unused here - the vertex shader already projected it into In.ShadowPos
-    float Boost;
 } pushConsts;
+
+// = g_WedgeFillBoost (xskeleton_editor_view.h). A constant, not a push constant: with it the block was 132 bytes (144 on the
+// C++ side), above the 128 every Vulkan device must accept (maxPushConstantsSize; WSLg\'s Dozen driver allows exactly 128).
+const float WedgeFillBoost = 1.8;
 
 int isqr(int a) { return a * a; }
 
@@ -72,7 +75,7 @@ void main()
 
     // Brighten the RGB only - boosting alpha too would just make the fill MORE opaque instead of
     // brighter, defeating the whole point of it being translucent.
-    Color.rgb *= pushConsts.Boost;
+    Color.rgb *= WedgeFillBoost;
 
     // Self-shadowing - w must be checked BEFORE the divide (see E21_GridShader_frag.glsl's main()
     // for why doing it after is a no-op). Less aggressive than the grid's own t (0.5 vs 0.3) so a
