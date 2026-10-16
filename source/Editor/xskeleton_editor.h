@@ -7,6 +7,7 @@
 // with each bone (a new name, virtual, deleted, exposed as a socket, its LOD, its weight in each mask layer) is edited in the hierarchy or with
 // commands, all undoable. Hosts include this header and open editors through xeditor::open_resource_editors.
 #include "source/Tools/Editor/xeditor_descriptor_editor.h"
+#include "source/Tools/Editor/xeditor_camera_toolbar.h"
 #include "dependencies/xresource_pipeline_v2/source/editor/xresource_editor_resources.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_scene.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_runtime.h"
@@ -362,6 +363,7 @@ namespace xskeleton_editor
         query_cmd                                               m_ListBones, m_SelectBones, m_ClearSelection, m_ListLayers;
 
         runtime                                                 m_Scene;
+        xeditor::camera_toolbar                                 m_CameraToolbar;
         xeditor::camera_cmds                                    m_CameraCmds;
         view_settings                                           m_Settings;
         xeditor::inspector_panel                                m_SettingsInspector{ "Skeleton View" };
@@ -398,6 +400,7 @@ namespace xskeleton_editor
             m_bLastNormalize = m_Settings.m_bNormalizeSize;
 
             AddPanel("Skeleton View",      dock::left,   [this] { m_SettingsInspector.Show(); });
+            if (pDevice) m_CameraToolbar.Init(m_Document.m_Guid.m_Instance.m_Value);
             AddPanel("Skeleton Viewport",  dock::center, [this] { RenderViewport(); }, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
             AddPanel("Bone Hierarchy",     dock::right,  [this] { RenderHierarchy(); });
             AddPanel("Description",        dock::right,  [this] { m_DescriptorInspector.Show(); });
@@ -821,6 +824,11 @@ namespace xskeleton_editor
 
         void RenderViewport() noexcept
         {
+            m_CameraToolbar.Render(ImGui::GetContentRegionAvail(), m_Scene.m_State, [this] { RenderViewportBody(); });
+        }
+
+        void RenderViewportBody() noexcept
+        {
             auto* pHost   = xeditor::host::current();
             auto* pWindow = pHost ? pHost->find<xgpu::window>() : nullptr;
             const ImVec2 Avail = ImGui::GetContentRegionAvail();
@@ -879,6 +887,7 @@ namespace xskeleton_editor
             {
                 if (m_bOpen) m_Scene.DrawBones(CmdBuffer);
             });
+            m_Scene.DrawOverlay();
 
             RenderLabels(*pSkeleton, Min, Avail, Mouse);
         }

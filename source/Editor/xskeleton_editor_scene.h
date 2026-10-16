@@ -68,7 +68,7 @@ namespace xskeleton_editor
         bool                        m_bReady = false;
 
         // The camera's numbers, for the camera commands
-        xeditor::camera_access Camera() noexcept { return { &m_Angles, &m_Distance, &m_Target, [this] { m_bReframe = true; } }; }
+        xeditor::camera_access Camera() noexcept { return { &m_Angles, &m_Distance, &m_Target, [this] { m_bReframe = true; }, &m_State }; }
 
         static bool Ok(xgpu::device::error* pErr) noexcept
         {
