@@ -22,10 +22,16 @@ namespace xskeleton_desc
         xmath::fvec3        m_Scale         = xmath::fvec3::fromOne();
         xmath::fvec3        m_Rotation      = xmath::fvec3::fromZero();   // radians
         xmath::fvec3        m_Translation   = xmath::fvec3::fromZero();
+        bool                m_EditorLockScale = false;      // editor only: the Scale lock toggle (editing one axis scales all three)
 
         XPROPERTY_DEF
         ( "Transform", transform
-        , obj_member<"Scale",           &transform::m_Scale >
+        , obj_scope<"Scale", xproperty::settings::vector3_group
+            , obj_member<"X", &xmath::LockedScaleAxis<transform, &transform::m_Scale, &transform::m_EditorLockScale, 0>>
+            , obj_member<"Y", &xmath::LockedScaleAxis<transform, &transform::m_Scale, &transform::m_EditorLockScale, 1>>
+            , obj_member<"Z", &xmath::LockedScaleAxis<transform, &transform::m_Scale, &transform::m_EditorLockScale, 2>>
+            >
+        , obj_member<"EditorLockScale", &transform::m_EditorLockScale, member_flags<flags::DONT_SHOW>>
         , obj_member<"Rotation",        &transform::m_Rotation >
         , obj_member<"Translation",     &transform::m_Translation >
         )
