@@ -20,7 +20,7 @@ namespace xskeleton_desc
     struct transform
     {
         xmath::fvec3        m_Scale         = xmath::fvec3::fromOne();
-        xmath::fvec3        m_Rotation      = xmath::fvec3::fromZero();   // radians
+        xmath::fvec3        m_Rotation      = xmath::fvec3::fromZero();   // degrees (X pitch, Y yaw, Z roll: the compiler's ApplyPreTransform)
         xmath::fvec3        m_Translation   = xmath::fvec3::fromZero();
         bool                m_EditorLockScale = false;      // editor only: the Scale lock toggle (editing one axis scales all three)
 

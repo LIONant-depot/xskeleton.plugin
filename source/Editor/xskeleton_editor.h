@@ -8,6 +8,7 @@
 // commands, all undoable. Hosts include this header and open editors through xeditor::open_resource_editors.
 #include "source/Tools/Editor/xeditor_descriptor_editor.h"
 #include "source/Tools/Editor/xeditor_camera_toolbar.h"
+#include "source/Tools/Editor/xeditor_transform_gizmo.h"
 #include "dependencies/xresource_pipeline_v2/source/editor/xresource_editor_resources.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_scene.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_runtime.h"
@@ -364,6 +365,10 @@ namespace xskeleton_editor
 
         runtime                                                 m_Scene;
         xeditor::camera_toolbar                                 m_CameraToolbar;
+        xeditor::transform_gizmo::state                         m_Gizmo;                    // the Move / Rotate / Scale gizmo of the view: the descriptor's PreTransform
+        xeditor::transform_gizmo::actions                       m_GizmoActions{ m_Gizmo };  // its keys (Preview/ToolMove...)
+        xeditor::transform_gizmo::pre                           m_Compiled;                 // the PreTransform the loaded skeleton was compiled with: the view shows the one being edited against it
+        void RegisterActions(ximgui::actions::context& Ctx) noexcept override { Ctx.Scope(m_GizmoActions, "Preview"); }
         xeditor::camera_cmds                                    m_CameraCmds;
         view_settings                                           m_Settings;
         xeditor::inspector_panel                                m_SettingsInspector{ "Skeleton View" };
@@ -400,7 +405,7 @@ namespace xskeleton_editor
             m_bLastNormalize = m_Settings.m_bNormalizeSize;
 
             AddPanel("Skeleton View",      dock::left,   [this] { m_SettingsInspector.Show(); });
-            if (pDevice) m_CameraToolbar.Init(m_Document.m_Guid.m_Instance.m_Value);
+            if (pDevice) m_CameraToolbar.Init(m_Document.m_Guid.m_Instance.m_Value, 390.0f, 270.0f);      // with the gizmo's tools
             AddPanel("Skeleton Viewport",  dock::center, [this] { RenderViewport(); }, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
             AddPanel("Bone Hierarchy",     dock::right,  [this] { RenderHierarchy(); });
             AddPanel("Description",        dock::right,  [this] { m_DescriptorInspector.Show(); });
@@ -477,6 +482,7 @@ namespace xskeleton_editor
             m_Ref.m_Instance = m_Document.m_Guid.m_Instance;
             auto* pSkeleton = xresource::g_Mgr.getResource(m_Ref);
             if (!pSkeleton) { m_Ref.clear(); m_ErrorMessage = "The compiled skeleton could not be loaded."; return; }
+            m_Compiled = xeditor::transform_gizmo::PreOf(pDesc->m_PreTransform);
 
             ComputePoses(*pSkeleton);
             const auto Bones = pSkeleton->getBones();
@@ -824,7 +830,8 @@ namespace xskeleton_editor
 
         void RenderViewport() noexcept
         {
-            m_CameraToolbar.Render(ImGui::GetContentRegionAvail(), m_Scene.m_State, [this] { RenderViewportBody(); });
+            m_CameraToolbar.Render(ImGui::GetContentRegionAvail(), m_Scene.m_State, [this] { RenderViewportBody(); }
+                                  , [this](bool bHorizontal, float ButtonHeight) { xeditor::transform_gizmo::Buttons(m_Gizmo, bHorizontal, ButtonHeight); });
         }
 
         void RenderViewportBody() noexcept
@@ -833,11 +840,26 @@ namespace xskeleton_editor
             auto* pWindow = pHost ? pHost->find<xgpu::window>() : nullptr;
             const ImVec2 Avail = ImGui::GetContentRegionAvail();
             const ImVec2 Min   = ImGui::GetCursorScreenPos();
+            xeditor::transform_gizmo::layer GizmoLayer(m_Gizmo, *ImGui::GetWindowDrawList());     // the gizmo over all of it
             ImGui::GetWindowDrawList()->AddRectFilled(Min, ImVec2(Min.x + Avail.x, Min.y + Avail.y), IM_COL32(115, 115, 115, 255));
-            ImGui::InvisibleButton("##SkeletonViewport", Avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
-            const bool bHovered = ImGui::IsItemHovered();
-            xeditor::PreviewGestures();
-            m_Scene.HandleInput();
+
+            // The gizmo (W E R) on the descriptor's PreTransform, before the view's button: while it is hovered a Dummy stands in for the button
+            // (the camera and the keys still work, a click is the gizmo's, not a pick), and only its drag keeps the camera out
+            bool bGizmo = false;
+            if (auto* pDesc = Desc(); pDesc && m_bReady && pWindow && Skeleton())
+            {
+                const float S = ViewScale();
+                bGizmo = xeditor::transform_gizmo::Run(m_Gizmo, *this, GizmoLayer, m_Scene.m_View, Min, Avail, xeditor::transform_gizmo::TargetOf(pDesc->m_PreTransform)
+                                                     , xmath::fmat4::fromScale(xmath::fvec3(S, S, S)));
+            }
+            if (bGizmo) ImGui::Dummy(Avail);
+            else        ImGui::InvisibleButton("##SkeletonViewport", Avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+            const bool bHovered = ImGui::IsItemHovered() && !bGizmo;
+            if (!xeditor::transform_gizmo::Dragging())
+            {
+                xeditor::PreviewGestures();
+                m_Scene.HandleInput();
+            }
 
             auto* pSkeleton = Skeleton();
             if (!m_bReady || !pWindow) { ImGui::SetCursorScreenPos(Min); ImGui::TextDisabled("The 3D view needs a GPU device (open from the editor)."); return; }
@@ -850,6 +872,20 @@ namespace xskeleton_editor
             m_Scene.m_Center = m_Center * Scale;
             const auto& Src = m_Settings.m_Pose == pose_mode::BIND ? m_WorldBind : m_WorldFrozen;
             m_Scaled = Src;
+            // The PreTransform being edited (the gizmo, the inspector), before it is compiled: the compiled bones moved from the one they were compiled with
+            if (auto* pDesc = Desc())
+            {
+                const xmath::fmat4 Pending = xeditor::transform_gizmo::PendingTransform(m_Compiled, xeditor::transform_gizmo::PreOf(pDesc->m_PreTransform));
+                if (!(m_Compiled == xeditor::transform_gizmo::PreOf(pDesc->m_PreTransform)))
+                    for (auto& W : m_Scaled)
+                    {
+                        const xmath::fvec3 P = Pending * W.m_Position;
+                        const auto Dir = [&](const xmath::fvec3& V) { const xmath::fvec3 D = Pending * (W.m_Position + V) - P; return D.Length() > 1.0e-12f ? D.NormalizeCopy() * V.Length() : V; };
+                        W.m_Right    = Dir(W.m_Right);
+                        W.m_Up       = Dir(W.m_Up);
+                        W.m_Position = P;
+                    }
+            }
             for (auto& W : m_Scaled) W.m_Position = W.m_Position * Scale;
             m_Scene.UpdateView(Min, Avail.x, Avail.y);
 
