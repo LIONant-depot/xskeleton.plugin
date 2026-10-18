@@ -1,6 +1,9 @@
 #ifndef XSKELETON_BONE_MANIFEST_H
 #define XSKELETON_BONE_MANIFEST_H
 #pragma once
+#include <cstdint>
+#include <format>
+#include <string>
 
 namespace xskeleton_desc
 {
@@ -85,6 +88,13 @@ namespace xskeleton_desc
     };
     XPROPERTY_REG(bone_manifest)
     XPROPERTY_REG2(anim_bone_entry_, bone_manifest::bone_entry)
+
+    // Where a skeleton's compile writes its manifest, relative to the project: what a consumer (a skin, an anim package) registers as one of its
+    // m_Dependencies.m_Assets so that it compiles again whenever its skeleton does (a PreTransform edit, a bone change)
+    inline std::wstring ManifestRelativePath(std::uint64_t SkeletonInstance) noexcept
+    {
+        return std::format(L"Cache/Resources/Logs/Skeleton/{:02X}/{:02X}/{:X}.log/AnimPackage.txt", SkeletonInstance & 0xff, (SkeletonInstance & 0xff00) >> 8, SkeletonInstance);
+    }
 }
 
 #endif

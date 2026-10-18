@@ -9,6 +9,7 @@
 #include "source/Tools/Editor/xeditor_descriptor_editor.h"
 #include "source/Tools/Editor/xeditor_camera_toolbar.h"
 #include "source/Tools/Editor/xeditor_transform_gizmo.h"
+#include "source/Tools/Editor/xeditor_scale_reference.h"
 #include "dependencies/xresource_pipeline_v2/source/editor/xresource_editor_resources.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_scene.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_runtime.h"
@@ -831,7 +832,11 @@ namespace xskeleton_editor
         void RenderViewport() noexcept
         {
             m_CameraToolbar.Render(ImGui::GetContentRegionAvail(), m_Scene.m_State, [this] { RenderViewportBody(); }
-                                  , [this](bool bHorizontal, float ButtonHeight) { xeditor::transform_gizmo::Buttons(m_Gizmo, bHorizontal, ButtonHeight); });
+                                  , [this](bool bHorizontal, float ButtonHeight)
+                                    {
+                                        xeditor::scale_reference::Button(bHorizontal, ButtonHeight);
+                                        xeditor::transform_gizmo::Buttons(m_Gizmo, bHorizontal, ButtonHeight);
+                                    });
         }
 
         void RenderViewportBody() noexcept
@@ -923,6 +928,12 @@ namespace xskeleton_editor
             {
                 if (m_bOpen) m_Scene.DrawBones(CmdBuffer);
             });
+            if (!m_Scaled.empty())
+            {   // the human scale reference: 1.8 m beside the skeleton as drawn (the PreTransform being edited), scaled with the view
+                xmath::fvec3 BoxMin = m_Scaled[0].m_Position, BoxMax = BoxMin;
+                for (const auto& W : m_Scaled) { BoxMin = BoxMin.Min(W.m_Position); BoxMax = BoxMax.Max(W.m_Position); }
+                xeditor::scale_reference::DrawBesideBox(*ImGui::GetWindowDrawList(), m_Scene.m_View.getW2C(), m_Scene.m_View.getPosition(), Min, Avail, BoxMin, BoxMax, Scale);
+            }
             m_Scene.DrawOverlay();
 
             RenderLabels(*pSkeleton, Min, Avail, Mouse);
