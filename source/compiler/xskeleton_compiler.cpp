@@ -298,6 +298,21 @@ namespace xskeleton_compiler
                 if (auto Err = BuildFinalSkeleton(); Err)
                     return Err;
                 displayProgressBar("Building Skeleton", 1);
+
+                // Where the joints are in the bind pose (its PreTransform applied): the space the skins bound to this skeleton are in. Only the bones with
+                // bind data of their own (an identity inverse bind pose means "none": see ApplyPreTransform)
+                {
+                    std::vector<xmath::fvec3> Joints;
+                    for (int i = 0; i < m_FinalSkeleton.m_nBones; ++i)
+                        if (!m_FinalSkeleton.m_pBones[i].m_InvBindPose.isIdentity())
+                            Joints.push_back(m_FinalSkeleton.m_pBones[i].m_InvBindPose.Inverse() * xmath::fvec3::fromZero());
+                    if (!Joints.empty())
+                    {
+                        const xmath::fbbox Box{ std::span<const xmath::fvec3>(Joints) };
+                        const auto         Size = Box.getSize(), Center = Box.getCenter();
+                        LogMessage(xresource_pipeline::msg_type::INFO, std::format("Joints {} Size {:.4f} {:.4f} {:.4f} Center {:.4f} {:.4f} {:.4f}", Joints.size(), Size.m_X, Size.m_Y, Size.m_Z, Center.m_X, Center.m_Y, Center.m_Z));
+                    }
+                }
             }
             catch (std::runtime_error Error)
             {
