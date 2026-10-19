@@ -14,6 +14,8 @@
 #include "dependencies/xproperty/source/xcore/my_properties.cpp"
 #include "dependencies/xmath/source/bridge/xmath_to_xproperty.h"
 
+#include <fstream>
+#include <filesystem>
 #include <unordered_map>
 #include <algorithm>
 #include <cctype>
@@ -513,6 +515,56 @@ namespace xskeleton_compiler
             Check(xskeleton::SuggestIntent("IK_Hand_L")        == intent::IK_TARGET, "IK_* is an IK target");
             Check(xskeleton::SuggestIntent("CC_Base_Spine01")  == intent::NONE,      "an ordinary joint has none");
             Check(xskeleton::SuggestIntent("MTP_Hips_a")       == intent::NONE,      "MTP_Hips_* is not guessed");
+        }
+
+        // A descriptor saved before 1.1 (its compact bone table has the per-bone Transform columns, its properties the RootBone Transform) still loads;
+        // saved again it has no Transform at all
+        {
+            const auto Dir = std::filesystem::temp_directory_path() / L"xskeleton_selftest";
+            std::error_code Ec;
+            std::filesystem::create_directories(Dir, Ec);
+            const auto Old = Dir / L"old.txt", New = Dir / L"new.txt";
+            {
+                std::ofstream(Old, std::ios::binary) << R"(
+[ DescriptorVersion ]
+{ Major:d  Minor:d }
+//-------  -------
+     1        0
+
+// New Types
+< s32:d u32:g s16:C u16:H s8:c u8:h f32:f f64:F string:s wstring:S u64:G s64:D bool:c full_guid:GG enum:s >
+
+[ xProperties : 3 ]
+{ Name:s                                         Value:?                                    }
+//---------------------------------------------  ------------------------------------------
+  "Skeleton/RootBone/Transform/Scale/X"          ;f32     #3F800000
+  "Skeleton/RootBone/Transform/EditorLockScale"  ;bool    0
+  "Skeleton/CompactTree"                         ;bool    1
+
+[ BoneOverrides : 2 ]
+{ Parent:d  Name:s    Rename:s  Type:d  Expose:d  Delete:d  LOD:d  Scale:fff                      Rotation:fff  Position:fff  Lock:d }
+//--------  --------  --------  ------  --------  --------  -----  -----------------------------  ------------  ------------  ------
+     -1     "Root"      ""       0        0         0        0    #3F800000 #3F800000 #3F800000    #0 #0 #0      #0 #0 #0      1
+      0     "Child"     "Kid"    1        1         0        2    #3F800000 #3F800000 #3F800000    #0 #0 #0      #0 #0 #0      0
+)";
+            }
+            xskeleton_desc::descriptor D;
+            xproperty::settings::context C;
+            Check(!D.Serialize(true, Old.wstring(), C), "a descriptor saved before 1.1 loads");
+            Check(D.m_RootBone.m_Name == "Root" && D.m_RootBone.m_Bones.size() == 1, "the old bone table keeps its tree");
+            if (!D.m_RootBone.m_Bones.empty())
+            {
+                const auto& Child = D.m_RootBone.m_Bones[0];
+                Check(Child.m_Name == "Child" && Child.m_Rename == "Kid" && Child.m_Type == xskeleton_desc::bone_type::VIRTUAL && Child.m_bExpose && Child.m_LODLevel == 2, "the old bone table keeps the fields that stay");
+            }
+
+            Check(!D.Serialize(false, New.wstring(), C), "a descriptor saves");
+            std::ifstream In(New, std::ios::binary);
+            const std::string Text((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+            Check(Text.find("Rotation:fff") == std::string::npos && Text.find("RootBone/Transform") == std::string::npos, "a saved descriptor has no bone Transform");
+            xskeleton_desc::descriptor E;
+            Check(!E.Serialize(true, New.wstring(), C) && E.m_RootBone.m_Bones.size() == 1 && E.m_RootBone.m_Bones[0].m_Rename == "Kid", "a saved descriptor loads again");
+            std::filesystem::remove_all(Dir, Ec);
         }
 
         std::printf(nFailed ? "SELFTEST: %d failed\n" : "SELFTEST: OK\n", nFailed);

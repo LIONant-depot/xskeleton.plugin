@@ -40,11 +40,10 @@ namespace xskeleton_desc
     XPROPERTY_REG(transform)
 
     // A bone is a bone, whether or not any animation clip ever supplies it a curve.
-    // NORMAL   - Expected to receive animation curve data. m_Transform is the delta from the imported bind pose.
+    // NORMAL   - Expected to receive animation curve data.
     // VIRTUAL  - Never receives curve data from a clip. Its pose is supplied by something outside the
     //            core animation evaluator (a weighted average of other bones, physics/IK, or a static
-    //            authored offset for an attachment socket). m_Transform is the delta from the parent,
-    //            and is used verbatim until/unless whoever drives this bone overwrites it.
+    //            authored offset for an attachment socket).
     enum class bone_type : std::uint8_t
     { NORMAL
     , VIRTUAL
@@ -98,7 +97,6 @@ namespace xskeleton_desc
     {
         std::string             m_Name          = {};                    // Unique within this skeleton. Bones are matched by name across skin/animation/retargeting at author time - stays the RAW imported name so overrides keep matching across re-imports even after a rename (see m_Rename).
         std::string             m_Rename        = {};                    // If non-empty, this bone's compiled/output name instead of m_Name (mirrors xgeom_static's ungroup_mesh: original identity kept separate from the editable output name).
-        transform                m_Transform     = {};                    // See bone_type for how this delta is interpreted.
         bone_type               m_Type          = bone_type::NORMAL;
         bool                    m_bExpose       = false;                 // Show as a socket/attachment point in editors that consume this skeleton.
         bool                    m_bDeleteBone   = false;                 // Marks this (imported) bone for removal from the compiled skeleton.
@@ -110,7 +108,6 @@ namespace xskeleton_desc
         ( "Bone", bone
         , obj_member<"Name",         &bone::m_Name, member_flags< flags::SHOW_READONLY> >
         , obj_member<"Rename",       &bone::m_Rename >
-        , obj_member<"Transform",    &bone::m_Transform >
         , obj_member<"Type",         &bone::m_Type, member_enum_span<bone_type_v> >
         , obj_member<"Expose",       &bone::m_bExpose >
         , obj_member<"DeleteBone",   &bone::m_bDeleteBone >
@@ -246,7 +243,7 @@ namespace xskeleton_desc
         }
 
         // The tree as a flat pre-order table: parent index and every field of a bone (xproperty builds each path in a 256 char buffer)
-        static xerr StreamCompactTree(xtextfile::stream& File, bone& Tree) noexcept
+        static xerr StreamCompactTree(xtextfile::stream& File, bone& Tree, bool bLegacyColumns) noexcept
         {
             struct row { int m_Parent; bone m_Bone; };
             std::vector<row> Rows;
@@ -267,8 +264,8 @@ namespace xskeleton_desc
                 , [&](std::size_t i, xerr& Err)
                 {
                     auto& B     = Rows[i].m_Bone;
-                    int   Type  = static_cast<int>(B.m_Type), Expose = B.m_bExpose, Delete = B.m_bDeleteBone, Lock = B.m_Transform.m_EditorLockScale;
-                    auto& T     = B.m_Transform;
+                    float Legacy[9] = {}; int LegacyLock = 0;
+                    int   Type  = static_cast<int>(B.m_Type), Expose = B.m_bExpose, Delete = B.m_bDeleteBone;
                     false
                     || (Err = File.Field("Parent",   Rows[i].m_Parent))
                     || (Err = File.Field("Name",     B.m_Name))
@@ -277,11 +274,11 @@ namespace xskeleton_desc
                     || (Err = File.Field("Expose",   Expose))
                     || (Err = File.Field("Delete",   Delete))
                     || (Err = File.Field("LOD",      B.m_LODLevel))
-                    || (Err = File.Field("Scale",    T.m_Scale.m_X, T.m_Scale.m_Y, T.m_Scale.m_Z))
-                    || (Err = File.Field("Rotation", T.m_Rotation.m_X, T.m_Rotation.m_Y, T.m_Rotation.m_Z))
-                    || (Err = File.Field("Position", T.m_Translation.m_X, T.m_Translation.m_Y, T.m_Translation.m_Z))
-                    || (Err = File.Field("Lock",     Lock));
-                    B.m_Type = static_cast<bone_type>(Type); B.m_bExpose = Expose != 0; B.m_bDeleteBone = Delete != 0; T.m_EditorLockScale = Lock != 0;
+                    || (bLegacyColumns && ((Err = File.Field("Scale",    Legacy[0], Legacy[1], Legacy[2]))        // the per-bone Transform of descriptors before 1.1: read and dropped
+                                        || (Err = File.Field("Rotation", Legacy[3], Legacy[4], Legacy[5]))
+                                        || (Err = File.Field("Position", Legacy[6], Legacy[7], Legacy[8]))
+                                        || (Err = File.Field("Lock",     LegacyLock))));
+                    B.m_Type = static_cast<bone_type>(Type); B.m_bExpose = Expose != 0; B.m_bDeleteBone = Delete != 0;
                 }); Err) return Err;
 
             // The intents the user set, in their own record (only the bones off AUTO): a descriptor saved before intents existed has none
@@ -316,6 +313,7 @@ namespace xskeleton_desc
         {
             xtextfile::stream Stream;
             if (auto Err = Stream.Open(isReading, FileName, xtextfile::file_type::TEXT); Err) return Err;
+            if (!isReading) m_Version.m_Minor = 1;     // 1.1: a bone has no Transform of its own (nothing ever read it)
             if (auto Err = m_Version.SerializeVersion(Stream); Err) return Err;
 
             bone Tree;
@@ -328,7 +326,7 @@ namespace xskeleton_desc
             auto Err = xproperty::sprop::serializer::Stream<xproperty::settings::atomic_types_tuple>(Stream, *this, Context);
             if (!isReading && m_bCompactTree) std::swap(Tree, m_RootBone);
             if (Err) return Err;
-            return m_bCompactTree ? StreamCompactTree(Stream, m_RootBone) : xerr{};
+            return m_bCompactTree ? StreamCompactTree(Stream, m_RootBone, isReading && m_Version.m_Minor < 1) : xerr{};
         }
 
         XPROPERTY_VDEF
