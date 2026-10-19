@@ -95,6 +95,7 @@ namespace xskeleton_desc::merge
             Bone.m_Name            = (pOv && !pOv->m_Rename.empty()) ? pOv->m_Rename : StripVBoneTag(Src.m_Name);
             Bone.m_Flags.m_bVirtual = bVirtual;
             Bone.m_Flags.m_bSocket  = bSocket;
+            Bone.m_Flags.m_bSkinned = Src.m_bHasBind;
             Bone.m_LODLevel        = pOv ? pOv->m_LODLevel : 0;
             // World-space bind inverse (used for skinning) - untouched by any reparenting below,
             // since that's specifically designed to preserve this bone's world bind pose exactly.

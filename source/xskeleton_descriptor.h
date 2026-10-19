@@ -200,6 +200,81 @@ namespace xskeleton_desc
         transform                    m_PreTransform  = {};    // Author-time scale/origin correction applied before compiling (imported skeletons are often at the wrong scale/pivot).
         bone                         m_RootBone      = {};    // A skeleton has exactly one root (matches the existing runtime convention: bone 0 is always the sole root) - reached through this field rather than through someone else's m_Bones, but otherwise an ordinary `bone`, same shape as any other.
         std::vector<mask_group>     m_MaskGroups    = {};
+        bool                        m_bCompactTree  = false;  // the bone tree is too deep for xproperty's paths: RootBone is empty in the properties, the tree follows as the "BoneOverrides" table
+
+        static int Depth(const bone& B) noexcept
+        {
+            int d = 0;
+            for (auto& C : B.m_Bones) d = std::max(d, Depth(C));
+            return d + 1;
+        }
+
+        // The tree as a flat pre-order table: parent index and every field of a bone (xproperty builds each path in a 256 char buffer)
+        static xerr StreamCompactTree(xtextfile::stream& File, bone& Tree) noexcept
+        {
+            struct row { int m_Parent; bone m_Bone; };
+            std::vector<row> Rows;
+            if (!File.isReading())
+            {
+                const auto Flatten = [&](auto&& Self, const bone& B, int Parent) -> void
+                {
+                    const int Me = static_cast<int>(Rows.size());
+                    Rows.push_back({ Parent, B });
+                    Rows.back().m_Bone.m_Bones.clear();
+                    for (auto& C : B.m_Bones) Self(Self, C, Me);
+                };
+                Flatten(Flatten, Tree, -1);
+            }
+
+            if (auto Err = File.Record("BoneOverrides"
+                , [&](std::size_t& Count, xerr&) { if (File.isReading()) Rows.resize(Count); else Count = Rows.size(); }
+                , [&](std::size_t i, xerr& Err)
+                {
+                    auto& B     = Rows[i].m_Bone;
+                    int   Type  = static_cast<int>(B.m_Type), Expose = B.m_bExpose, Delete = B.m_bDeleteBone, Lock = B.m_Transform.m_EditorLockScale;
+                    auto& T     = B.m_Transform;
+                    false
+                    || (Err = File.Field("Parent",   Rows[i].m_Parent))
+                    || (Err = File.Field("Name",     B.m_Name))
+                    || (Err = File.Field("Rename",   B.m_Rename))
+                    || (Err = File.Field("Type",     Type))
+                    || (Err = File.Field("Expose",   Expose))
+                    || (Err = File.Field("Delete",   Delete))
+                    || (Err = File.Field("LOD",      B.m_LODLevel))
+                    || (Err = File.Field("Scale",    T.m_Scale.m_X, T.m_Scale.m_Y, T.m_Scale.m_Z))
+                    || (Err = File.Field("Rotation", T.m_Rotation.m_X, T.m_Rotation.m_Y, T.m_Rotation.m_Z))
+                    || (Err = File.Field("Position", T.m_Translation.m_X, T.m_Translation.m_Y, T.m_Translation.m_Z))
+                    || (Err = File.Field("Lock",     Lock));
+                    B.m_Type = static_cast<bone_type>(Type); B.m_bExpose = Expose != 0; B.m_bDeleteBone = Delete != 0; T.m_EditorLockScale = Lock != 0;
+                }); Err) return Err;
+
+            if (File.isReading())
+            {
+                for (int i = static_cast<int>(Rows.size()) - 1; i > 0; --i)    // pre-order: a child always comes after its parent
+                    Rows[Rows[i].m_Parent].m_Bone.m_Bones.insert(Rows[Rows[i].m_Parent].m_Bone.m_Bones.begin(), std::move(Rows[i].m_Bone));
+                if (!Rows.empty()) Tree = std::move(Rows[0].m_Bone);
+            }
+            return {};
+        }
+
+        xerr Serialize(bool isReading, std::wstring_view FileName, xproperty::settings::context& Context) noexcept override
+        {
+            xtextfile::stream Stream;
+            if (auto Err = Stream.Open(isReading, FileName, xtextfile::file_type::TEXT); Err) return Err;
+            if (auto Err = m_Version.SerializeVersion(Stream); Err) return Err;
+
+            bone Tree;
+            if (isReading) m_bCompactTree = false;
+            else
+            {
+                m_bCompactTree = Depth(m_RootBone) > details::compact_depth_v;
+                if (m_bCompactTree) std::swap(Tree, m_RootBone);
+            }
+            auto Err = xproperty::sprop::serializer::Stream<xproperty::settings::atomic_types_tuple>(Stream, *this, Context);
+            if (!isReading && m_bCompactTree) std::swap(Tree, m_RootBone);
+            if (Err) return Err;
+            return m_bCompactTree ? StreamCompactTree(Stream, m_RootBone) : xerr{};
+        }
 
         XPROPERTY_VDEF
         ( "Skeleton", descriptor
@@ -207,6 +282,7 @@ namespace xskeleton_desc
         , obj_member<"PreTransform",    &descriptor::m_PreTransform >
         , obj_member<"RootBone",        &descriptor::m_RootBone >
         , obj_member<"MaskGroups",      &descriptor::m_MaskGroups >
+        , obj_member<"CompactTree",     &descriptor::m_bCompactTree, member_flags<flags::DONT_SHOW> >
         )
     };
     XPROPERTY_VREG(descriptor)

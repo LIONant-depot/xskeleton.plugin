@@ -378,12 +378,38 @@ namespace xskeleton_editor
         Circle(Frame.m_Forward, Frame.m_Right);
     }
 
+    // Which parent->child edges are drawn, as Blender draws a rig: a bone is one wedge, toward the child that carries on its chain (the one with
+    // the most descendants), its other children only link to it with a line. A plain node of the hierarchy (no mesh bound to it: a group
+    // with hundreds of children) is no bone at all, as Blender's empties: nothing is drawn from it. A skeleton compiled before the SKINNED
+    // flag existed has no bone flagged: there every bone counts as skinned.
+    enum class edge_draw : std::uint8_t { NONE, LINE, WEDGE };
+    inline std::vector<edge_draw> EdgeDrawModes(const xskeleton::skeleton& Skeleton) noexcept       // indexed by the child
+    {
+        const auto  Bones = Skeleton.getBones();
+        const int   n     = static_cast<int>(Bones.size());
+        const bool  bAny  = std::any_of(Bones.begin(), Bones.end(), [](const auto& B) { return B.m_Flags.m_bSkinned; });
+        std::vector<int> nDesc(n, 0), Main(n, -1);
+        for (int i = n - 1; i > 0; --i) if (const int p = Bones[i].m_iParent; p >= 0) nDesc[p] += nDesc[i] + 1;        // parents come first
+        for (int i = 0; i < n; ++i) if (const int p = Bones[i].m_iParent; p >= 0 && (Main[p] < 0 || nDesc[i] > nDesc[Main[p]])) Main[p] = i;
+        std::vector<edge_draw> Out(n, edge_draw::NONE);
+        for (int i = 0; i < n; ++i)
+        {
+            const int p = Bones[i].m_iParent;
+            if (p < 0 || (bAny && !Bones[p].m_Flags.m_bSkinned)) continue;
+            Out[i] = (Main[p] == i) ? edge_draw::WEDGE : edge_draw::LINE;
+        }
+        return Out;
+    }
+
     inline void BuildWedgeGeometry(const xskeleton::skeleton& Skeleton, const std::vector<bone_world>& World, const std::vector<bool>& IsTwistBone, const wedge_style& Style, const std::set<int>& SelectedBones, float OverallRadius, render_color_mode Mode, int MaskGroupIdx, int HoveredBone, std::vector<e19::draw_vert>& Verts, bool bOutlineOnly = false)
     {
         Verts.clear();
 
         const auto Bones = Skeleton.getBones();
         if (World.size() != Bones.size()) return;
+        const auto Edges = EdgeDrawModes(Skeleton);
+        std::vector<bool> bHasChild(Bones.size(), false);
+        for (const auto& Bone : Bones) if (Bone.m_iParent >= 0) bHasChild[Bone.m_iParent] = true;
 
         for (int i = 0; i < int(Bones.size()); ++i)
         {
@@ -393,6 +419,26 @@ namespace xskeleton_editor
             const xmath::fvec3& A = World[iParent].m_Position;
             const xmath::fvec3& B = World[i].m_Position;
 
+            // A leaf (a cloth or face joint) is a short bone of its own, carrying on from its parent, as Blender draws it
+            if (!bHasChild[i])
+            {
+                const xmath::fvec3 D   = B - A;
+                const float        Len = D.Length();
+                wedge_shape        Stub;
+                if (Len > 1e-6f && ComputeWedgeShape(B, B + D * (std::clamp(Len * 0.25f, 0.01f, 0.05f) / Len), World[i].m_Right, World[i].m_Up, Stub))
+                    for (int k = 0; k < 4; ++k)
+                    {
+                        EmitEdge(Verts, B,             Stub.m_Ring[k],           false, Style, SelectedBones.count(i) != 0, i == HoveredBone, Style.m_NormalColor);
+                        EmitEdge(Verts, Stub.m_Ring[k], Stub.m_Ring[(k + 1) & 3], false, Style, SelectedBones.count(i) != 0, i == HoveredBone, Style.m_NormalColor);
+                    }
+            }
+
+            if (Edges[i] != edge_draw::WEDGE)
+            {
+                if (Edges[i] == edge_draw::LINE) EmitEdge(Verts, A, B, true, Style, SelectedBones.count(i) != 0, i == HoveredBone, Style.m_NormalColor);
+                continue;
+            }
+
             wedge_shape Shape;
             if (!ComputeWedgeShape(A, B, World[i].m_Right, World[i].m_Up, Shape)) continue;
 
@@ -400,8 +446,8 @@ namespace xskeleton_editor
             // LoadSkeleton - that shouldn't visually compete with the main limb chain) and stays the
             // same in both poses - it never encoded bind-data confidence (BuildWedgeFillGeometry no
             // longer does either, see FillAlphaScale's own comment).
-            const bool          bSelected  = SelectedBones.count(i) != 0;
-            const bool          bHovered   = i == HoveredBone;
+            const bool          bSelected  = SelectedBones.count(iParent) != 0;     // the wedge toward its main child IS the parent bone (EdgeDrawModes)
+            const bool          bHovered   = iParent == HoveredBone;
             const bool          bVirtual   = Bones[i].m_Flags.m_bVirtual;
             const bool          bTwist     = i < int(IsTwistBone.size()) && IsTwistBone[i];
             const bool          bDashed    = (bVirtual || bTwist) && !bSelected;
@@ -525,6 +571,7 @@ namespace xskeleton_editor
         // is the one that reads correctly, so both poses now just use it.
         constexpr float FillAlphaScale = 0.55f;
 
+        const auto Edges = EdgeDrawModes(Skeleton);
         std::vector<fill_entry> Entries;
         Entries.reserve(Bones.size());
         for (int i = 0; i < int(Bones.size()); ++i)
@@ -538,6 +585,7 @@ namespace xskeleton_editor
             }
 
             if (Bones[i].m_Flags.m_bVirtual) continue; // matches wedges: virtual bones stay outline-only
+            if (Edges[i] != edge_draw::WEDGE) continue; // matches wedges: only a bone's own wedge has a body
             if (i < int(IsTwistBone.size()) && IsTwistBone[i]) continue;
 
             const float Dist = ((World[iParent].m_Position + World[i].m_Position) * 0.5f - Style.m_CameraPos).Length();
@@ -550,8 +598,9 @@ namespace xskeleton_editor
 
         for (auto& E : Entries)
         {
-            const bool  bSelected = SelectedBones.count(E.m_iBone) != 0;
-            const bool  bHovered  = E.m_iBone == HoveredBone;
+            const int   iOwner    = E.m_bIsRoot ? E.m_iBone : E.m_iParent;     // a wedge is its parent bone (EdgeDrawModes)
+            const bool  bSelected = SelectedBones.count(iOwner) != 0;
+            const bool  bHovered  = iOwner == HoveredBone;
 
             if (E.m_bIsRoot)
             {
@@ -747,6 +796,24 @@ namespace xskeleton_editor
         const auto Bones = Skeleton.getBones();
         if (World.size() != Bones.size()) return;
 
+        // What is drawn is what picks: a wedge picks its parent bone, a leaf's stub picks the leaf (BuildWedgeGeometry)
+        const auto        Edges = EdgeDrawModes(Skeleton);
+        std::vector<bool> bHasChild(Bones.size(), false);
+        for (const auto& Bone : Bones) if (Bone.m_iParent >= 0) bHasChild[Bone.m_iParent] = true;
+        const auto Test = [&](const xmath::fvec3& A, const xmath::fvec3& B, int iRight, int iBone)
+        {
+            wedge_shape Shape;
+            if (!ComputeWedgeShape(A, B, World[iRight].m_Right, World[iRight].m_Up, Shape)) return;
+            for (int k = 0; k < 4; ++k)
+            {
+                const xmath::fvec3& R0 = Shape.m_Ring[k];
+                const xmath::fvec3& R1 = Shape.m_Ring[(k + 1) & 3];
+                float T;
+                if (RayTriangleIntersect(Origin, Dir, A, R0, R1, T) && T < OutT) { OutT = T; OutBone = iBone; }
+                if (RayTriangleIntersect(Origin, Dir, B, R1, R0, T) && T < OutT) { OutT = T; OutBone = iBone; }
+            }
+        };
+
         for (int i = 0; i < int(Bones.size()); ++i)
         {
             const int iParent = Bones[i].m_iParent;
@@ -754,18 +821,11 @@ namespace xskeleton_editor
 
             const xmath::fvec3& A = World[iParent].m_Position;
             const xmath::fvec3& B = World[i].m_Position;
-
-            wedge_shape Shape;
-            if (!ComputeWedgeShape(A, B, World[i].m_Right, World[i].m_Up, Shape)) continue;
-
-            for (int k = 0; k < 4; ++k)
+            if (Edges[i] == edge_draw::WEDGE) Test(A, B, i, iParent);
+            if (!bHasChild[i])
             {
-                const xmath::fvec3& R0 = Shape.m_Ring[k];
-                const xmath::fvec3& R1 = Shape.m_Ring[(k + 1) & 3];
-
-                float T;
-                if (RayTriangleIntersect(Origin, Dir, A, R0, R1, T) && T < OutT) { OutT = T; OutBone = i; }
-                if (RayTriangleIntersect(Origin, Dir, B, R1, R0, T) && T < OutT) { OutT = T; OutBone = i; }
+                const xmath::fvec3 D = B - A; const float Len = D.Length();
+                if (Len > 1e-6f) Test(B, B + D * (std::clamp(Len * 0.25f, 0.01f, 0.05f) / Len), i, i);
             }
         }
 
