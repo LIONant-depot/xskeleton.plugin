@@ -50,7 +50,7 @@ namespace xskeleton_editor
 
     struct view_settings
     {
-        pose_mode           m_Pose              = pose_mode::FROZEN;
+        pose_mode           m_Pose              = pose_mode::BIND;      // as Unreal (its reference pose is the bind) and Blender show a rig: inside its mesh
         bool                m_bAlwaysShowNames  = false;
         bool                m_bNormalizeSize    = true;         // the view is scaled so the skeleton is about a meter: the grid, depth range and wedge sizes assume a human-sized subject
         render_color_mode   m_ColorMode         = render_color_mode::NORMAL_RENDER;
@@ -512,21 +512,33 @@ namespace xskeleton_editor
                 W.m_Position = Mats[i].ExtractPosition(); W.m_Right = Mats[i].Right(); W.m_Up = Mats[i].Up();
                 Center += W.m_Position;
             }
-            for (std::size_t i = 0; i < Bones.size(); ++i)
+            // The bind pose. A bone a mesh is bound to is where its bind puts it. One with no bind of its own (a CC rig's upper arm or forearm, moved
+            // only through its twist bones) is placed from its nearest bound descendant, keeping their offset from the frozen pose: that offset
+            // is the same in both poses (a twist bone only rolls, the wrist sits at the end of the forearm), while its own local rotation is not
+            // (the arm hangs in one pose and is out in the other - composing it under the parent's bind put the elbow under the shoulder).
+            // A bone with no bound descendant either follows its parent's bind with its frozen local transform.
             {
-                auto& W = m_WorldBind[i];
-                if (!Bones[i].m_InvBindPose.isIdentity())
+                std::vector<xmath::fmat4> Frozen = Mats;                            // the frozen world matrices from the loop above
+                std::vector<int>          iBound(Bones.size(), -1);                 // nearest bound descendant (or itself)
+                for (int i = static_cast<int>(Bones.size()) - 1; i >= 0; --i)     // children come after their parents: walk up
                 {
-                    Mats[i] = Bones[i].m_InvBindPose.Inverse();
-                    W.m_bRealBindData = true;
+                    if (!Bones[i].m_InvBindPose.isIdentity()) iBound[i] = i;
+                    if (const int p = Bones[i].m_iParent; p >= 0 && iBound[p] != p && iBound[i] >= 0 && (iBound[p] < 0 || iBound[i] < iBound[p])) iBound[p] = iBound[i];
                 }
-                else
+                for (std::size_t i = 0; i < Bones.size(); ++i)
                 {
-                    const xmath::fmat4 Local = Rests[i].m_RestPose.toMatrix();
-                    Mats[i] = Bones[i].m_iParent < 0 ? Local : Mats[Bones[i].m_iParent] * Local;
-                    W.m_bRealBindData = false;
+                    auto& W = m_WorldBind[i];
+                    W.m_bRealBindData = !Bones[i].m_InvBindPose.isIdentity();
+                    if (W.m_bRealBindData)          Mats[i] = Bones[i].m_InvBindPose.Inverse();
+                    else if (const int d = iBound[i]; d >= 0)
+                                                    Mats[i] = Bones[d].m_InvBindPose.Inverse() * Frozen[d].Inverse() * Frozen[i];
+                    else
+                    {
+                        const xmath::fmat4 Local = Rests[i].m_RestPose.toMatrix();
+                        Mats[i] = Bones[i].m_iParent < 0 ? Local : Mats[Bones[i].m_iParent] * Local;
+                    }
+                    W.m_Position = Mats[i].ExtractPosition(); W.m_Right = Mats[i].Right(); W.m_Up = Mats[i].Up();
                 }
-                W.m_Position = Mats[i].ExtractPosition(); W.m_Right = Mats[i].Right(); W.m_Up = Mats[i].Up();
             }
 
             if (!Bones.empty()) Center /= float(Bones.size());

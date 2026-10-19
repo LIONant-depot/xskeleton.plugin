@@ -24,7 +24,7 @@ namespace xskeleton
         enum mask : std::uint8_t
         { VIRTUAL   = (1 << 0)
         , SOCKET    = (1 << 1)
-        , SKINNED   = (1 << 2)      // a mesh is bound to it in the source (the viewer draws it as a bone; the other nodes as links)
+        , JOINT     = (1 << 2)      // a joint of the source rig, weighted or not - unset only on the pivot helpers assimp inserts between joints ($AssimpFbx$): the view skips those
         , DEFAULT   = 0
         };
 
@@ -35,7 +35,7 @@ namespace xskeleton
             std::uint8_t
                   m_bVirtual : 1
                 , m_bSocket  : 1
-                , m_bSkinned : 1
+                , m_bJoint   : 1
                 ;
         };
     };

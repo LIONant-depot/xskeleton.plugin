@@ -67,7 +67,10 @@ namespace xskeleton_editor
         std::array<xmath::fvec3, 4> m_Ring;
     };
 
-    inline bool ComputeWedgeShape(const xmath::fvec3& A, const xmath::fvec3& B, const xmath::fvec3& Right, const xmath::fvec3& Up, wedge_shape& Out)
+    inline float JointMarkerRadius(float OverallRadius) noexcept { return OverallRadius * 0.006f; }
+
+    // MaxWidth: Unreal draws every bone with the same radius (BoneRadius) - a width of 10% of the length made a long link (hips to knee) a slab
+    inline bool ComputeWedgeShape(const xmath::fvec3& A, const xmath::fvec3& B, const xmath::fvec3& Right, const xmath::fvec3& Up, wedge_shape& Out, float MaxWidth = 1.0e30f)
     {
         xmath::fvec3 Dir = B - A;
         const float  Len = Dir.Length();
@@ -86,8 +89,8 @@ namespace xskeleton_editor
         const xmath::fvec3 RightOrtho = Dir.Cross(UpOrtho).Normalize();
         UpOrtho = RightOrtho.Cross(Dir).Normalize();
 
-        const float HeadWidth = std::max(Len * 0.10f, 1.0e-4f);
-        const float HeadDist  = std::min(Len * 0.22f, HeadWidth * 2.4f);
+        const float HeadWidth = std::max(std::min(Len * 0.10f, MaxWidth), 1.0e-4f);
+        const float HeadDist  = std::min(Len * 0.22f, HeadWidth * 0.3f);     // the widest ring right at the parent joint: Unreal's cone (base at the parent, point at the child) - the wide end tells which bone is the parent
         const xmath::fvec3 Center = A + Dir * HeadDist;
 
         Out.m_Ring =
@@ -379,16 +382,15 @@ namespace xskeleton_editor
     }
 
     // How a bone is drawn, as Unreal's editor draws a skeleton (SkeletalDebugRendering::DrawBonesInternal/DrawWireBoneAdvanced): a joint marker
-    // at its position plus a wedge to each of its children, and those wedges are PART OF THE PARENT bone - they highlight with it and pick it.
-    // Unreal's import keeps only the joints: here a node no mesh is bound to (assimp's $AssimpFbx$ pivot helpers between joints, a group with
-    // hundreds of children) is skipped - no marker, no wedge - and a joint connects to its nearest joint ancestor. A skeleton compiled before
-    // the SKINNED flag existed has no bone flagged: there every bone is a joint.
+    // at its position plus a cone to each of its children, and those cones are PART OF THE PARENT bone - they highlight with it and pick it.
+    // Every node of the file is a joint, weighted or not (a CC rig's forearm moves through its twist bones and has no weight of its own),
+    // except the pivot helpers assimp inserts between joints ("$AssimpFbx$" in the name): Unreal reads the FBX itself and never sees them.
     inline std::vector<bool> JointBones(const xskeleton::skeleton& Skeleton) noexcept
     {
         const auto        Bones = Skeleton.getBones();
-        const bool        bAny  = std::any_of(Bones.begin(), Bones.end(), [](const auto& B) { return B.m_Flags.m_bSkinned; });
+        const bool        bAny  = std::any_of(Bones.begin(), Bones.end(), [](const auto& B) { return B.m_Flags.m_bJoint; });   // compiled before the flag: all joints
         std::vector<bool> Out(Bones.size());
-        for (std::size_t i = 0; i < Bones.size(); ++i) Out[i] = !bAny || Bones[i].m_Flags.m_bSkinned;
+        for (std::size_t i = 0; i < Bones.size(); ++i) Out[i] = !bAny || Bones[i].m_Flags.m_bJoint;
         return Out;
     }
 
@@ -407,8 +409,6 @@ namespace xskeleton_editor
         return Out;
     }
 
-    inline float JointMarkerRadius(float OverallRadius) noexcept { return OverallRadius * 0.006f; }
-
     inline void BuildWedgeGeometry(const xskeleton::skeleton& Skeleton, const std::vector<bone_world>& World, const std::vector<bool>& IsTwistBone, const wedge_style& Style, const std::set<int>& SelectedBones, float OverallRadius, render_color_mode Mode, int MaskGroupIdx, int HoveredBone, std::vector<e19::draw_vert>& Verts, bool bOutlineOnly = false)
     {
         Verts.clear();
@@ -426,7 +426,7 @@ namespace xskeleton_editor
             const xmath::fvec3& B = World[i].m_Position;
 
             wedge_shape Shape;
-            if (!ComputeWedgeShape(A, B, World[i].m_Right, World[i].m_Up, Shape)) continue;
+            if (!ComputeWedgeShape(A, B, World[i].m_Right, World[i].m_Up, Shape, JointMarkerRadius(OverallRadius) * 2.0f)) continue;
 
             // Dashing is a TYPE-based style choice (virtual placeholder, or a twist helper joint - see
             // LoadSkeleton - that shouldn't visually compete with the main limb chain) and stays the
@@ -656,7 +656,7 @@ namespace xskeleton_editor
             const xmath::fvec3& B = World[E.m_iBone].m_Position;
 
             wedge_shape Shape;
-            if (!ComputeWedgeShape(A, B, World[E.m_iBone].m_Right, World[E.m_iBone].m_Up, Shape)) continue;
+            if (!ComputeWedgeShape(A, B, World[E.m_iBone].m_Right, World[E.m_iBone].m_Up, Shape, JointMarkerRadius(OverallRadius) * 2.0f)) continue;
 
             const float ThisAlpha = FillAlphaScale;
             const std::uint32_t WedgeBaseColor = ResolveBoneColor(Skeleton, E.m_iBone, Mode, MaskGroupIdx, Style.m_NormalColor);
@@ -766,7 +766,7 @@ namespace xskeleton_editor
             const xmath::fvec3& B = World[i].m_Position;
 
             wedge_shape Shape;
-            if (!ComputeWedgeShape(A, B, World[i].m_Right, World[i].m_Up, Shape)) continue;
+            if (!ComputeWedgeShape(A, B, World[i].m_Right, World[i].m_Up, Shape, JointMarkerRadius(OverallRadius) * 2.0f)) continue;
 
             for (int k = 0; k < 4; ++k)
             {
@@ -806,7 +806,7 @@ namespace xskeleton_editor
         const auto Test = [&](const xmath::fvec3& A, const xmath::fvec3& B, int iRight, int iBone)
         {
             wedge_shape Shape;
-            if (!ComputeWedgeShape(A, B, World[iRight].m_Right, World[iRight].m_Up, Shape)) return;
+            if (!ComputeWedgeShape(A, B, World[iRight].m_Right, World[iRight].m_Up, Shape, JointMarkerRadius(OverallRadius) * 2.0f)) return;
             for (int k = 0; k < 4; ++k)
             {
                 const xmath::fvec3& R0 = Shape.m_Ring[k];
