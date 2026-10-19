@@ -4,6 +4,7 @@
 
 #include "plugins/xmaterial_instance.plugin/source/xmaterial_instance_xgpu_rsc_loader.h"
 #include "plugins/xskeleton.plugin/source/xskeleton_details.h"
+#include "plugins/xskeleton.plugin/source/xskeleton.h"
 #include <functional>
 #include <format>
 
@@ -49,6 +50,39 @@ namespace xskeleton_desc
     , VIRTUAL
     };
 
+    // A bone's intent as the user set it: AUTO follows xskeleton::SuggestIntent (the name), the rest are the user's choice (NONE included)
+    enum class bone_intent : std::uint8_t
+    { AUTO
+    , NONE
+    , MOTION
+    , FACING
+    , LOOK_AT
+    , IK_TARGET
+    };
+
+    static constexpr auto bone_intent_v = std::array
+    { xproperty::settings::enum_item("Auto",      bone_intent::AUTO)
+    , xproperty::settings::enum_item("None",      bone_intent::NONE)
+    , xproperty::settings::enum_item("Motion",    bone_intent::MOTION)
+    , xproperty::settings::enum_item("Facing",    bone_intent::FACING)
+    , xproperty::settings::enum_item("Look-at",   bone_intent::LOOK_AT)
+    , xproperty::settings::enum_item("IK target", bone_intent::IK_TARGET)
+    };
+
+    // The intent a bone ends up with: the user's, or the suggestion from its (raw) name
+    inline xskeleton::intent ResolveIntent(bone_intent Override, std::string_view RawName) noexcept
+    {
+        switch (Override)
+        {
+        case bone_intent::AUTO:      return xskeleton::SuggestIntent(RawName);
+        case bone_intent::MOTION:    return xskeleton::intent::MOTION;
+        case bone_intent::FACING:    return xskeleton::intent::FACING;
+        case bone_intent::LOOK_AT:   return xskeleton::intent::LOOK_AT;
+        case bone_intent::IK_TARGET: return xskeleton::intent::IK_TARGET;
+        default:                     return xskeleton::intent::NONE;
+        }
+    }
+
     static constexpr auto bone_type_v = std::array
     { xproperty::settings::enum_item("NORMAL",  bone_type::NORMAL)
     , xproperty::settings::enum_item("VIRTUAL", bone_type::VIRTUAL)
@@ -69,6 +103,7 @@ namespace xskeleton_desc
         bool                    m_bExpose       = false;                 // Show as a socket/attachment point in editors that consume this skeleton.
         bool                    m_bDeleteBone   = false;                 // Marks this (imported) bone for removal from the compiled skeleton.
         int                     m_LODLevel      = 0;                     // Highest LOD index at which this bone is still active; frozen at its rest pose beyond it. 0 = always active.
+        bone_intent             m_Intent        = bone_intent::AUTO;     // What the bone is for (xskeleton::intent); AUTO: the suggestion from its name
         std::vector<bone>       m_Bones         = {};                    // Children - see the struct comment.
 
         XPROPERTY_DEF
@@ -80,6 +115,7 @@ namespace xskeleton_desc
         , obj_member<"Expose",       &bone::m_bExpose >
         , obj_member<"DeleteBone",   &bone::m_bDeleteBone >
         , obj_member<"LODLevel",     &bone::m_LODLevel >
+        , obj_member<"Intent",       &bone::m_Intent, member_enum_span<bone_intent_v> >
         , obj_member<"Bones",        &bone::m_Bones >
         )
     };
@@ -247,6 +283,25 @@ namespace xskeleton_desc
                     || (Err = File.Field("Lock",     Lock));
                     B.m_Type = static_cast<bone_type>(Type); B.m_bExpose = Expose != 0; B.m_bDeleteBone = Delete != 0; T.m_EditorLockScale = Lock != 0;
                 }); Err) return Err;
+
+            // The intents the user set, in their own record (only the bones off AUTO): a descriptor saved before intents existed has none
+            {
+                struct intent_row { int m_Row; int m_Intent; };
+                std::vector<intent_row> Intents;
+                if (!File.isReading())
+                    for (std::size_t i = 0; i < Rows.size(); ++i)
+                        if (Rows[i].m_Bone.m_Intent != bone_intent::AUTO) Intents.push_back({ static_cast<int>(i), static_cast<int>(Rows[i].m_Bone.m_Intent) });
+                const bool bRead = File.isReading() && !File.isEOF() && File.getRecordName() == std::string_view("BoneIntents");
+                if (!File.isReading() ? !Intents.empty() : bRead)
+                {
+                    if (auto Err = File.Record("BoneIntents"
+                        , [&](std::size_t& Count, xerr&) { if (File.isReading()) Intents.resize(Count); else Count = Intents.size(); }
+                        , [&](std::size_t i, xerr& Err) { false || (Err = File.Field("Row", Intents[i].m_Row)) || (Err = File.Field("Intent", Intents[i].m_Intent)); }); Err) return Err;
+                    if (File.isReading())
+                        for (auto& E : Intents)
+                            if (E.m_Row >= 0 && E.m_Row < static_cast<int>(Rows.size())) Rows[E.m_Row].m_Bone.m_Intent = static_cast<bone_intent>(E.m_Intent);
+                }
+            }
 
             if (File.isReading())
             {

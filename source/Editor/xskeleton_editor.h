@@ -204,7 +204,7 @@ namespace xskeleton_editor
     struct set_bone_cmd : edit_cmd
     {
         set_bone_cmd(xundo::system& System, xeditor::descriptor_document& Doc, const xskeleton_desc::details& Details) noexcept
-            : edit_cmd(System, Doc, Details, "SetBone", "Edits what the compiler does with bones (undoable). Usage: SetBone -Bones \"one raw name per line\" [-Rename \"name\"] [-Virtual true|false] [-Delete true|false] [-Expose true|false] [-LOD level]")
+            : edit_cmd(System, Doc, Details, "SetBone", "Edits what the compiler does with bones (undoable). Usage: SetBone -Bones \"one raw name per line\" [-Rename \"name\"] [-Virtual true|false] [-Delete true|false] [-Expose true|false] [-LOD level] [-Intent auto|none|motion|facing|lookat|iktarget]")
         { RegisterArguments(); }
 
         void RegisterArguments() noexcept override
@@ -215,6 +215,16 @@ namespace xskeleton_editor
             m_hDelete  = m_Parser.addOption("Delete",  "true: leave the bone out of the skeleton",    false, 1);
             m_hExpose  = m_Parser.addOption("Expose",  "true: the bone is a socket",                  false, 1);
             m_hLOD     = m_Parser.addOption("LOD",     "The highest LOD the bone is active at",       false, 1);
+            m_hIntent  = m_Parser.addOption("Intent",  "What the bone is for: auto (from its name), none, motion, facing, lookat, iktarget", false, 1);
+        }
+
+        static bool ParseIntent(const std::string& Text, xskeleton_desc::bone_intent& Out) noexcept
+        {
+            using bi = xskeleton_desc::bone_intent;
+            static constexpr std::pair<std::string_view, bi> Map[]
+            { {"auto", bi::AUTO}, {"none", bi::NONE}, {"motion", bi::MOTION}, {"facing", bi::FACING}, {"lookat", bi::LOOK_AT}, {"iktarget", bi::IK_TARGET} };
+            for (auto& [Name, Value] : Map) if (Text == Name) { Out = Value; return true; }
+            return false;
         }
 
         static bool Bool(const std::string& Text, bool& Out) noexcept
@@ -230,10 +240,13 @@ namespace xskeleton_editor
             std::vector<std::string> Names;
             if (auto Err = Bones(Names); !Err.empty()) return "SetBone: " + Err;
 
-            std::string Rename, Virtual, Delete, Expose, LOD;
+            std::string Rename, Virtual, Delete, Expose, LOD, Intent;
             const bool bRename = xeditor::cmd_util::GetArg(m_Parser, m_hRename, Rename), bVirtual = xeditor::cmd_util::GetArg(m_Parser, m_hVirtual, Virtual);
             const bool bDelete = xeditor::cmd_util::GetArg(m_Parser, m_hDelete, Delete), bExpose = xeditor::cmd_util::GetArg(m_Parser, m_hExpose, Expose), bLOD = xeditor::cmd_util::GetArg(m_Parser, m_hLOD, LOD);
-            if (!bRename && !bVirtual && !bDelete && !bExpose && !bLOD) return "SetBone: nothing to change";
+            const bool bIntent = xeditor::cmd_util::GetArg(m_Parser, m_hIntent, Intent);
+            if (!bRename && !bVirtual && !bDelete && !bExpose && !bLOD && !bIntent) return "SetBone: nothing to change";
+            xskeleton_desc::bone_intent NewIntent{};
+            if (bIntent && !ParseIntent(Intent, NewIntent)) return "SetBone: Intent takes auto, none, motion, facing, lookat or iktarget";
 
             bool bV = false, bD = false, bE = false;
             int iLOD = 0;
@@ -248,6 +261,7 @@ namespace xskeleton_editor
                 if (bVirtual) B.m_Type        = bV ? xskeleton_desc::bone_type::VIRTUAL : xskeleton_desc::bone_type::NORMAL;
                 if (bDelete)  B.m_bDeleteBone = bD;
                 if (bExpose)  B.m_bExpose     = bE;
+                if (bIntent)  B.m_Intent      = NewIntent;
                 if (bLOD)
                 {
                     B.m_LODLevel = iLOD;
@@ -258,7 +272,7 @@ namespace xskeleton_editor
             return {};
         }
 
-        xcmdline::parser::handle m_hRename, m_hVirtual, m_hDelete, m_hExpose, m_hLOD;
+        xcmdline::parser::handle m_hRename, m_hVirtual, m_hDelete, m_hExpose, m_hLOD, m_hIntent;
     };
 
     // MatchLOD: every descendant of the named bones gets exactly the bone's own LOD
@@ -384,6 +398,10 @@ namespace xskeleton_editor
         bool                                                    m_bLastNormalize = true;
 
         std::set<int>                                           m_Selected;
+        int                                                     m_iScrollTo     = -1;   // the tree scrolls to (and opens down to) this bone once: one hovered or selected in the 3D view
+        std::vector<bool>                                       m_ScrollPath;           // the bones on the way to it (opened)
+        int                                                     m_iLastHover3D  = -1;
+        std::set<int>                                           m_LastSelected;
         int                                                     m_iAnchor = -1;
         int                                                     m_iHovered = -1;
         bool                                                    m_bTreeHovered = false;
@@ -447,6 +465,7 @@ namespace xskeleton_editor
                 m_RawNames[Hash] = std::string(Raw);
             };
             for (auto& Name : m_Details.m_BoneList) Add(Name);
+            Add("RuntimeRoot");     // xraw3d::anim::synthetic_root_name_v: made by the compiler, not a source node (skeleton_runtime_folding_plan.md)
             if (auto* pDesc = Desc())
             {
                 std::function<void(const xskeleton_desc::bone&)> Walk = [&](const xskeleton_desc::bone& Node) { Add(Node.m_Name); for (auto& Child : Node.m_Bones) Walk(Child); };
@@ -700,16 +719,37 @@ namespace xskeleton_editor
             if (bSelected) Flags |= ImGuiTreeNodeFlags_Selected;
             if (!bKids)    Flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
+            // A source node the compiler folded into the joints below it: real in the file, not in the runtime skeleton
+            const bool bFolded = iBone == -1 && !bDelete && !Compiled.empty();
             if (bDelete)       ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 90, 90, 255));
             else if (bVirtual) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 180, 84, 255));
+            else if (bFolded)  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
             std::string Label = Name;
             if (pOverride && pOverride->m_LODLevel > 0) Label += std::format("  [LOD{}]", pOverride->m_LODLevel);
             if (iBone != -1) if (const int Eff = GetBoneLODLevel(Skeleton, iBone); Eff != (pOverride ? pOverride->m_LODLevel : 0)) Label += std::format("  (compiled: LOD{})", Eff);
             if (bDelete) Label += "  (pending delete)";
+            if (bFolded) Label += "  (source only - folded at compile)";
+            if (m_iScrollTo >= 0 && iBone >= 0 && iBone < int(m_ScrollPath.size()) && m_ScrollPath[iBone]) ImGui::SetNextItemOpen(true);
             const bool bOpen = ImGui::TreeNodeEx(Raw.c_str(), Flags, "%s", bRenaming ? "" : Label.c_str());
-            if (bDelete || bVirtual) ImGui::PopStyleColor();
+            if (iBone >= 0 && iBone == m_iScrollTo) { if (!ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f); m_iScrollTo = -1; }
+            if (bDelete || bVirtual || bFolded) ImGui::PopStyleColor();
 
             if (ImGui::IsItemHovered()) { m_iHovered = iBone; m_bTreeHovered = true; }
+
+            // The bone's intent: its icon at the end of the name cell (dimmed while only suggested), spelled out on hover
+            {
+                const auto OvIntent = pOverride ? pOverride->m_Intent : xskeleton_desc::bone_intent::AUTO;
+                const auto Intent   = xskeleton_desc::ResolveIntent(OvIntent, Raw);
+                if (Intent != xskeleton::intent::NONE)
+                {
+                    const bool   bSuggested = OvIntent == xskeleton_desc::bone_intent::AUTO;
+                    const float  Size       = ImGui::GetTextLineHeight();
+                    const ImVec2 Min(ImGui::GetItemRectMax().x - Size - 4.0f, ImGui::GetItemRectMin().y + (ImGui::GetItemRectSize().y - Size) * 0.5f);
+                    xskeleton_editor::DrawIntentIcon(*ImGui::GetWindowDrawList(), Min, Size, Intent, bSuggested);
+                    if (ImGui::IsMouseHoveringRect(Min, ImVec2(Min.x + Size, Min.y + Size)))
+                        ImGui::SetTooltip("%s%s", xskeleton::intent_help_v[static_cast<int>(Intent)], bSuggested ? "\n(suggested from the name - right click to accept or change)" : "");
+                }
+            }
 
             if (bRenaming)
             {
@@ -742,6 +782,23 @@ namespace xskeleton_editor
                 if (ImGui::MenuItem(bVirtual ? "Mark as Normal Bone" : "Mark as Virtual Bone")) Pending = std::format("SetBone -Bones {} -Virtual {}", Targets, bVirtual ? "false" : "true");
                 if (ImGui::MenuItem(bDelete  ? "Unmark Deletion"     : "Mark for Deletion"))    Pending = std::format("SetBone -Bones {} -Delete {}",  Targets, bDelete  ? "false" : "true");
                 if (ImGui::MenuItem(bExpose  ? "Unexpose Socket"     : "Expose as Socket"))     Pending = std::format("SetBone -Bones {} -Expose {}",  Targets, bExpose  ? "false" : "true");
+                if (ImGui::BeginMenu("Intent"))
+                {
+                    using bi = xskeleton_desc::bone_intent;
+                    const auto Cur       = pOverride ? pOverride->m_Intent : bi::AUTO;
+                    const auto Suggested = xskeleton::SuggestIntent(Raw);
+                    const std::string AutoLabel = std::format("Auto (suggested: {})", xskeleton::intent_names_v[static_cast<int>(Suggested)]);
+                    static constexpr std::pair<bi, const char*> Items[] { {bi::NONE, "none"}, {bi::MOTION, "motion"}, {bi::FACING, "facing"}, {bi::LOOK_AT, "lookat"}, {bi::IK_TARGET, "iktarget"} };
+                    if (ImGui::MenuItem(AutoLabel.c_str(), nullptr, Cur == bi::AUTO)) Pending = std::format("SetBone -Bones {} -Intent auto", Targets);
+                    ImGui::Separator();
+                    for (auto& [Value, pArg] : Items)
+                    {
+                        const auto Resolved = xskeleton_desc::ResolveIntent(Value, Raw);
+                        if (ImGui::MenuItem(xskeleton::intent_names_v[static_cast<int>(Resolved)], nullptr, Cur == Value)) Pending = std::format("SetBone -Bones {} -Intent {}", Targets, pArg);
+                        if (ImGui::IsItemHovered() && Resolved != xskeleton::intent::NONE) ImGui::SetTooltip("%s", xskeleton::intent_help_v[static_cast<int>(Resolved)]);
+                    }
+                    ImGui::EndMenu();
+                }
                 if (ImGui::MenuItem("Match Children's LOD to This Bone")) Pending = std::format("MatchLOD -Bones {}", Targets);
                 if (iLayer >= 0 && ImGui::MenuItem("Match Children's Active Layer Weight to This Bone"))
                     Pending = std::format("SetMaskWeight -Layer {} -Bones {} -Weight {} -Children true", xeditor::Quote(D.m_MaskGroups[iLayer].m_Name), Targets, GetMaskWeight(D, iLayer, Raw));
@@ -817,6 +874,22 @@ namespace xskeleton_editor
             for (int i = 0; i < int(pSkeleton->getBones().size()); ++i) Compiled[RawName(*pSkeleton, i)] = i;
 
             std::string Pending;
+            // A bone hovered or newly selected in the 3D view (not in the tree itself) is brought into the tree's view
+            if (pSkeleton)
+            {
+                int iTarget = -1;
+                if (!m_bTreeHovered && m_iHovered >= 0 && m_iHovered != m_iLastHover3D) iTarget = m_iHovered;
+                if (m_Selected != m_LastSelected && !m_Selected.empty() && !m_bTreeHovered) iTarget = *m_Selected.rbegin();
+                m_iLastHover3D = m_bTreeHovered ? -1 : m_iHovered;
+                m_LastSelected = m_Selected;
+                if (iTarget >= 0 && iTarget < int(pSkeleton->getBones().size()))
+                {
+                    m_iScrollTo = iTarget;
+                    m_ScrollPath.assign(pSkeleton->getBones().size(), false);
+                    for (int p = pSkeleton->getBones()[iTarget].m_iParent; p >= 0; p = pSkeleton->getBones()[p].m_iParent) m_ScrollPath[p] = true;
+                }
+            }
+
             m_bTreeHovered = false;
             const bool bHovering = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
             const int  Hovered = m_iHovered;
@@ -933,6 +1006,21 @@ namespace xskeleton_editor
             const int iLayer = m_Settings.m_ColorMode == render_color_mode::ACTIVE_LAYER_RENDER && !m_Settings.m_ActiveLayer.empty() ? pSkeleton->findMaskGroupIndex(xstrtool::CRC32(m_Settings.m_ActiveLayer)) : -1;
             BuildWedgeGeometry    (*pSkeleton, m_Scaled, m_IsTwist, Style, m_Selected, m_Scene.m_Radius, m_Settings.m_ColorMode, iLayer, m_iHovered, m_Outline);
             BuildWedgeFillGeometry(*pSkeleton, m_Scaled, m_IsTwist, Style, m_Selected, m_Scene.m_Radius, m_Settings.m_ColorMode, iLayer, m_iHovered, m_Fill);
+            {   // the intents as the descriptor has them now (no compile needed to see a change)
+                const auto nBones = pSkeleton->getBones().size();
+                std::vector<std::uint8_t> Intents(nBones, 0), Suggested(nBones, 0);
+                if (auto* pDesc = Desc())
+                    for (std::size_t i = 0; i < nBones; ++i)
+                    {
+                        const auto  Raw = RawName(*pSkeleton, static_cast<int>(i));
+                        const auto* pOv = FindBoneOverride(pDesc->m_RootBone, Raw);
+                        const auto  Ov  = pOv ? pOv->m_Intent : xskeleton_desc::bone_intent::AUTO;
+                        Intents[i]   = static_cast<std::uint8_t>(xskeleton_desc::ResolveIntent(Ov, Raw));
+                        Suggested[i] = Ov == xskeleton_desc::bone_intent::AUTO;
+                    }
+                BuildIntentGlyphFills(m_Scaled, Intents, Suggested, Style, m_Selected, m_iHovered, m_Scene.m_Radius, m_Fill);
+                BuildIntentGlyphs(m_Scaled, Intents, Suggested, Style, m_Selected, m_iHovered, m_Scene.m_Radius, m_Outline);
+            }
             m_Scene.SetLines(m_Outline);
             m_Scene.SetFill(m_Fill);
             m_Scene.RenderShadow(*pWindow);

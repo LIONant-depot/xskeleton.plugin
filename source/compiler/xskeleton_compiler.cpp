@@ -286,6 +286,20 @@ namespace xskeleton_compiler
             ComputeDetailStructure();
 
             //
+            // The runtime skeleton keeps only the joints; the other source nodes (assimp's pivot helpers, the groups above the
+            // skeleton) are folded into them - their transforms baked in - and stay in the Details for the editor
+            // (documentation/Editors/skeleton_runtime_folding_plan.md)
+            //
+            {
+                auto       Joints  = m_Skeleton.RuntimeJoints();
+                xskeleton_desc::merge::KeepIntentBones(m_Descriptor, m_Skeleton, Joints.m_Keep);
+                const auto nBefore = m_Skeleton.m_Bone.size();
+                for (auto& Name : m_Skeleton.FoldBones(Joints.m_Keep, Joints.m_bSyntheticRoot))
+                    LogMessage(xresource_pipeline::msg_type::WARNING, std::format("Node '{}' kept: folding it would not fit translation/rotation/scale", Name));
+                LogMessage(xresource_pipeline::msg_type::INFO, std::format("Runtime joints: {} of {} source nodes{}", m_Skeleton.m_Bone.size() - (Joints.m_bSyntheticRoot ? 1 : 0), nBefore, Joints.m_bSyntheticRoot ? std::format(", under a synthetic root '{}'", xraw3d::anim::synthetic_root_name_v) : ""));
+            }
+
+            //
             // OK, time to compile
             //
             try
@@ -298,6 +312,15 @@ namespace xskeleton_compiler
                 if (auto Err = BuildFinalSkeleton(); Err)
                     return Err;
                 displayProgressBar("Building Skeleton", 1);
+
+                // The bones with an intent, per intent (the user's marks and the suggestions from the names)
+                for (int k = 1; k < static_cast<int>(xskeleton::intent::COUNT); ++k)
+                {
+                    std::string Names;
+                    for (int i = 0; i < m_FinalSkeleton.m_nBones; ++i)
+                        if (m_FinalSkeleton.m_pBones[i].m_Flags.m_Intent == k) Names += (Names.empty() ? "" : ", ") + m_BoneManifest.m_Bones[i].m_Name;
+                    if (!Names.empty()) LogMessage(xresource_pipeline::msg_type::INFO, std::format("Intent {}: {}", xskeleton::intent_names_v[k], Names));
+                }
 
                 // Where the joints are in the bind pose (its PreTransform applied): the space the skins bound to this skeleton are in. Only the bones with
                 // bind data of their own (an identity inverse bind pose means "none": see ApplyPreTransform)
@@ -400,5 +423,99 @@ namespace xskeleton_compiler
     std::unique_ptr<instance> instance::Create(void)
     {
         return std::make_unique<implementation>();
+    }
+
+    //------------------------------------------------------------------------------------------
+    // -SELFTEST: xraw3d's fold on synthetic rigs (documentation/Editors/skeleton_runtime_folding_plan.md)
+
+    int SelfTest()
+    {
+        int nFailed = 0;
+        const auto Check = [&](bool b, const char* pWhat) { if (!b) { ++nFailed; std::printf("SELFTEST FAILED: %s\n", pWhat); } };
+
+        using anim = xraw3d::anim;
+        const auto MakeBone = [](const char* pName, int Parent, bool bBound, xmath::fvec3 S, xmath::fquat R, xmath::fvec3 T)
+        {
+            anim::bone B{};
+            B.m_Name = pName; B.m_iParent = Parent; B.m_nChildren = 0; B.m_bHasBind = bBound;
+            B.m_BindScale = S; B.m_BindRotation = R; B.m_BindTranslation = T;
+            B.m_bScaleKeys = B.m_bRotationKeys = B.m_bTranslationKeys = B.m_bIsMasked = false;
+            B.m_BindMatrix = xmath::fmat4::fromIdentity(); B.m_BindMatrixInv = xmath::fmat4::fromIdentity(); B.m_NeutralPose = xmath::fmat4::fromIdentity();
+            return B;
+        };
+        const auto Key = [](xmath::fvec3 S, xmath::fquat R, xmath::fvec3 T) { anim::key_frame K; K.m_Scale = S; K.m_Rotation = R; K.m_Position = T; return K; };
+        const auto Global = [](const anim& A, const std::string& Name, int Frame)
+        {
+            xmath::fmat4 M; A.ComputeRawBoneL2W(A.GetBoneIDFromName(Name), M, Frame); return M.ExtractPosition();
+        };
+        const auto Near = [](xmath::fvec3 A, xmath::fvec3 B) { return (A - B).Length() < 1.0e-3f; };
+        const xmath::fvec3 One(1, 1, 1);
+        const xmath::fquat Id = xmath::fquat::fromIdentity();
+        const xmath::fquat Q90 = xmath::fquat(xmath::radian3(0_xdeg, 90_xdeg, 0_xdeg));
+
+        // Scene -> Hip (bound) -> helper ($AssimpFbx$, animated) -> Spine (bound) -> Head (unbound end joint)
+        {
+            anim A; A.m_nFrames = 2; A.m_FPS = 30;
+            A.m_Bone = { MakeBone("Scene", -1, false, One, Id, {0, 0, 0})
+                       , MakeBone("Hip", 0, true, One, Id, {0, 1, 0})
+                       , MakeBone("Hip_$AssimpFbx$_Rotation", 1, false, One, Q90, {0, 0.1f, 0})
+                       , MakeBone("Spine", 2, true, One, Id, {0.2f, 0.3f, 0})
+                       , MakeBone("Head", 3, false, One, Id, {0, 0.4f, 0}) };
+            for (int f = 0; f < 2; ++f)
+                for (auto& B : A.m_Bone)
+                    A.m_KeyFrame.push_back(Key(B.m_BindScale, (f == 1 && B.m_Name.find("$AssimpFbx$") != std::string::npos) ? xmath::fquat(xmath::radian3(0_xdeg, 45_xdeg, 0_xdeg)) : B.m_BindRotation, B.m_BindTranslation));
+
+            const auto J = A.RuntimeJoints();
+            Check(!J.m_Keep[0] && J.m_Keep[1] && !J.m_Keep[2] && J.m_Keep[3] && J.m_Keep[4] && !J.m_bSyntheticRoot, "keep set: the bound chain and its end joint, not the scene node or the helper; Hip is the root");
+
+            const xmath::fvec3 Spine0 = Global(A, "Spine", 0), Spine1 = Global(A, "Spine", 1), Head1 = Global(A, "Head", 1);
+            const auto Kept = A.FoldBones(J.m_Keep, J.m_bSyntheticRoot);
+            Check(Kept.empty() && A.m_Bone.size() == 3, "the scene node and the helper are folded");
+            Check(A.m_Bone[0].m_Name == "Hip" && A.m_Bone[0].m_iParent == -1 && A.m_Bone[1].m_Name == "Spine" && A.m_Bone[1].m_iParent == 0, "Spine hangs from Hip");
+            Check(Near(Global(A, "Spine", 0), Spine0) && Near(Global(A, "Spine", 1), Spine1) && Near(Global(A, "Head", 1), Head1), "the helper's animation is baked: every kept joint is where it was, every frame");
+        }
+
+        // A group (unbound) holding two bound branches under the scene root -> a synthetic root
+        {
+            anim A; A.m_nFrames = 1; A.m_FPS = 30;
+            A.m_Bone = { MakeBone("RootNode", -1, false, One, Id, {0, 0, 0})
+                       , MakeBone("Group", 0, false, One, Q90, {0, 0, 1})
+                       , MakeBone("Body", 1, true, One, Id, {0, 1, 0})
+                       , MakeBone("Face", 0, true, One, Id, {0, 1.6f, 0}) };
+            for (auto& B : A.m_Bone) A.m_KeyFrame.push_back(Key(B.m_BindScale, B.m_BindRotation, B.m_BindTranslation));
+            const auto J    = A.RuntimeJoints();
+            const auto Body = Global(A, "Body", 0);
+            Check(J.m_bSyntheticRoot && !J.m_Keep[0] && !J.m_Keep[1], "two branches under the scene root: a synthetic root, the group folded");
+            A.FoldBones(J.m_Keep, J.m_bSyntheticRoot);
+            Check(A.m_Bone.size() == 3 && A.m_Bone[0].m_Name == anim::synthetic_root_name_v && A.m_Bone[1].m_iParent == 0 && A.m_Bone[2].m_iParent == 0, "both branches hang from the synthetic root");
+            Check(Near(Global(A, "Body", 0), Body), "the group's transform is baked into the branch");
+        }
+
+        // A non-uniform scale above a rotated child makes shear: the fold would not fit, the node stays
+        {
+            anim A; A.m_nFrames = 1; A.m_FPS = 30;
+            A.m_Bone = { MakeBone("Hip", -1, true, One, Id, {0, 1, 0})
+                       , MakeBone("Squash_$AssimpFbx$_Scaling", 0, false, xmath::fvec3(1, 3, 1), Id, {0, 0, 0})
+                       , MakeBone("Arm", 1, true, One, xmath::fquat(xmath::radian3(0_xdeg, 0_xdeg, 45_xdeg)), {0.2f, 0, 0}) };
+            for (auto& B : A.m_Bone) A.m_KeyFrame.push_back(Key(B.m_BindScale, B.m_BindRotation, B.m_BindTranslation));
+            const auto J    = A.RuntimeJoints();
+            const auto Kept = A.FoldBones(J.m_Keep, J.m_bSyntheticRoot);
+            Check(Kept.size() == 1 && Kept[0] == "Squash_$AssimpFbx$_Scaling" && A.m_Bone.size() == 3, "a fold that needs shear keeps the node and names it");
+        }
+
+        // Intents suggested from the names rigs commonly use
+        {
+            using xskeleton::intent;
+            Check(xskeleton::SuggestIntent("MTP_Global_a")     == intent::FACING,    "MTP_Global_* faces");
+            Check(xskeleton::SuggestIntent("JNT_C_B_000_Root") == intent::MOTION,    "a *_Root bone is the motion root");
+            Check(xskeleton::SuggestIntent("MTP_Head_b")       == intent::LOOK_AT,   "MTP_Head_* is a look-at");
+            Check(xskeleton::SuggestIntent("MTP_L_Foot_a")     == intent::IK_TARGET, "MTP_*_Foot_* is an IK target");
+            Check(xskeleton::SuggestIntent("IK_Hand_L")        == intent::IK_TARGET, "IK_* is an IK target");
+            Check(xskeleton::SuggestIntent("CC_Base_Spine01")  == intent::NONE,      "an ordinary joint has none");
+            Check(xskeleton::SuggestIntent("MTP_Hips_a")       == intent::NONE,      "MTP_Hips_* is not guessed");
+        }
+
+        std::printf(nFailed ? "SELFTEST: %d failed\n" : "SELFTEST: OK\n", nFailed);
+        return nFailed;
     }
 }

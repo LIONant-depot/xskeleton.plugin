@@ -67,6 +67,21 @@ namespace xskeleton_desc::merge
     };
 
     //--------------------------------------------------------------------------------------
+    // A bone with an intent (marked by the user, or suggested by its name) is always a runtime joint: the fold never removes it
+    // (documentation/Editors/skeleton_runtime_folding_plan.md). Used by every compiler that folds a source to the skeleton's joints.
+    inline void KeepIntentBones(const descriptor& Descriptor, const xraw3d::anim& Skeleton, std::vector<bool>& Keep)
+    {
+        std::unordered_map<std::string, const bone*> Overrides;
+        CollectOverrides(Descriptor.m_RootBone, Overrides);
+        for (std::size_t i = 0; i < Skeleton.m_Bone.size() && i < Keep.size(); ++i)
+        {
+            const auto& Name = Skeleton.m_Bone[i].m_Name;
+            const auto  It   = Overrides.find(Name);
+            if (ResolveIntent(It == Overrides.end() ? bone_intent::AUTO : It->second->m_Intent, Name) != xskeleton::intent::NONE) Keep[i] = true;
+        }
+    }
+
+    //--------------------------------------------------------------------------------------
     // Drops deleted bones (re-parenting their children onto the nearest surviving ancestor),
     // applies type/LOD overrides, then enforces and sorts by the LOD invariant: a bone's LOD
     // level can never be lower than its parent's (a parent can't be a "more complex", higher-
@@ -95,7 +110,10 @@ namespace xskeleton_desc::merge
             Bone.m_Name            = (pOv && !pOv->m_Rename.empty()) ? pOv->m_Rename : StripVBoneTag(Src.m_Name);
             Bone.m_Flags.m_bVirtual = bVirtual;
             Bone.m_Flags.m_bSocket  = bSocket;
-            Bone.m_Flags.m_bJoint   = Src.m_Name.find("$AssimpFbx$") == std::string::npos;
+            Bone.m_Flags.m_Intent   = static_cast<std::uint8_t>(ResolveIntent(pOv ? pOv->m_Intent : bone_intent::AUTO, Src.m_Name));
+            // Not a joint (the view draws no bone out of it): assimp's pivot helpers, and the synthetic root xraw3d's fold puts over several
+            // branches - a runtime node with no transform of its own, like Blender's armature object
+            Bone.m_Flags.m_bJoint   = Src.m_Name.find("$AssimpFbx$") == std::string::npos && Src.m_Name != xraw3d::anim::synthetic_root_name_v;
             Bone.m_LODLevel        = pOv ? pOv->m_LODLevel : 0;
             // World-space bind inverse (used for skinning) - untouched by any reparenting below,
             // since that's specifically designed to preserve this bone's world bind pose exactly.

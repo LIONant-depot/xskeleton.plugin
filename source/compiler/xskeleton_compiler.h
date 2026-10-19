@@ -6,6 +6,9 @@
 
 namespace xskeleton_compiler
 {
+    // The compiler's own checks on synthetic rigs (no project needed): xskeleton_compiler.exe -SELFTEST. Returns the number of failures.
+    int SelfTest();
+
     enum class state : std::uint8_t
     { OK
     , FAILURE

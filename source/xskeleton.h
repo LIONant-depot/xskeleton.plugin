@@ -6,9 +6,54 @@
 #include "dependencies/xmath/source/xmath_ftransform.h"
 #include "dependencies/xserializer/source/xserializer.h"
 #include <span>
+#include <array>
+#include <string>
+#include <string_view>
+#include <cctype>
 
 namespace xskeleton
 {
+    // What a bone is FOR, beyond moving the skin - read by the editors (each draws its own glyph) and by tools and the runtime (find the
+    // facing bone, the look-at target...) without hard-coding names. Authored per bone in the skeleton editor (right click), or taken from
+    // SuggestIntent when the user leaves it on "auto".
+    enum class intent : std::uint8_t
+    { NONE
+    , MOTION        // the root / trajectory: where the character moves
+    , FACING        // where it faces or aims
+    , LOOK_AT       // a head or eye aim target
+    , IK_TARGET     // a hand or foot goal
+    , COUNT
+    };
+
+    inline constexpr std::array<const char*, static_cast<int>(intent::COUNT)> intent_names_v
+    { "None", "Motion", "Facing", "Look-at", "IK target" };
+
+    inline constexpr std::array<const char*, static_cast<int>(intent::COUNT)> intent_help_v
+    { ""
+    , "Motion - the root / trajectory bone: where the character moves"
+    , "Facing - the direction the character faces or aims"
+    , "Look-at - a target the head or eyes aim at"
+    , "IK target - a goal a hand or foot reaches for"
+    };
+
+    // A guess from the bone's name, for the bones the user left on "auto" - the patterns rigs commonly use. Only a suggestion: the editor
+    // shows it dimmed until the user accepts it (or marks the bone otherwise).
+    inline intent SuggestIntent(std::string_view Name) noexcept
+    {
+        std::string L(Name);
+        for (auto& c : L) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const auto Has      = [&](std::string_view s) { return L.find(s) != std::string::npos; };
+        const auto Starts   = [&](std::string_view s) { return L.starts_with(s); };
+        const auto Ends     = [&](std::string_view s) { return L.ends_with(s); };
+
+        if (Has("lookat") || Has("look_at") || Starts("mtp_head"))                                                       return intent::LOOK_AT;
+        if (Starts("ik_") || Has("_ik_") || Has("ikgoal") || Has("ik_target") || (Starts("mtp_") && (Has("foot") || Has("hand"))))
+                                                                                                                        return intent::IK_TARGET;
+        if (Has("facing") || Has("forward") || Starts("mtp_global"))                                                     return intent::FACING;
+        if (Has("trajectory") || Has("motion") || L == "root" || Ends("_root"))                                          return intent::MOTION;
+        return intent::NONE;
+    }
+
     // Per-bone flags, packed into one byte (see bone's own "hot, cache-tight" comment) - independent
     // bits, not a mutually-exclusive enum, so a bone can be both at once (e.g. a weapon-socket bone
     // that's also VIRTUAL, since it has no animation curve of its own - it's driven entirely by
@@ -25,6 +70,7 @@ namespace xskeleton
         { VIRTUAL   = (1 << 0)
         , SOCKET    = (1 << 1)
         , JOINT     = (1 << 2)      // a joint of the source rig, weighted or not - unset only on the pivot helpers assimp inserts between joints ($AssimpFbx$): the view skips those
+        , INTENT    = (7 << 3)      // the bone's intent (xskeleton::intent), 3 bits
         , DEFAULT   = 0
         };
 
@@ -36,6 +82,7 @@ namespace xskeleton
                   m_bVirtual : 1
                 , m_bSocket  : 1
                 , m_bJoint   : 1
+                , m_Intent   : 3            // xskeleton::intent
                 ;
         };
     };

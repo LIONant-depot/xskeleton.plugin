@@ -792,6 +792,246 @@ namespace xskeleton_editor
     using xeditor_tools::picking::RayTriangleIntersect;
     using xeditor_tools::picking::RaySphereIntersect;
 
+    //---------------------------------------------------------------------------
+    // Intents (xskeleton::intent): what a bone is for, drawn as its own glyph - shared by every editor that shows a skeleton (skeleton,
+    // skin, animation, later the level editor). The 3D glyph and the tree's 2D icon are the same shape, so the icon in the hierarchy is
+    // the thing in the scene. A suggested intent (the user left the bone on "auto") draws dimmed until the user accepts it.
+    //   MOTION    - a ring on the ground with an arrow: where the character moves
+    //   FACING    - an arrow along the bone's forward axis
+    //   LOOK_AT   - an eye (ring and pupil) with a dashed aim ray
+    //   IK_TARGET - a box (a handle to grab)
+    // The bone's forward axis is its Y axis (Blender's bone direction).
+    //---------------------------------------------------------------------------
+
+    inline std::uint32_t IntentColor(xskeleton::intent Intent, bool bSuggested) noexcept
+    {
+        std::uint32_t C = IM_COL32(200, 200, 200, 255);
+        switch (Intent)
+        {
+        case xskeleton::intent::MOTION:    C = IM_COL32( 90, 225, 120, 255); break;
+        case xskeleton::intent::FACING:    C = IM_COL32( 80, 200, 255, 255); break;
+        case xskeleton::intent::LOOK_AT:   C = IM_COL32(255, 215,  70, 255); break;
+        case xskeleton::intent::IK_TARGET: C = IM_COL32(255, 110,  90, 255); break;
+        default: break;
+        }
+        return bSuggested ? ((C & 0x00FFFFFFu) | (0x70u << 24)) : C;
+    }
+
+    // The intents of a compiled skeleton's bones (their flags) - for editors that show a skeleton without its descriptor
+    inline std::vector<std::uint8_t> IntentsFromFlags(const xskeleton::skeleton& Skeleton) noexcept
+    {
+        const auto Bones = Skeleton.getBones();
+        std::vector<std::uint8_t> Out(Bones.size());
+        for (std::size_t i = 0; i < Bones.size(); ++i) Out[i] = Bones[i].m_Flags.m_Intent;
+        return Out;
+    }
+
+    inline void BuildIntentGlyphs(const std::vector<bone_world>& World, std::span<const std::uint8_t> Intents, std::span<const std::uint8_t> Suggested
+                                 , const wedge_style& Style, const std::set<int>& SelectedBones, int HoveredBone, float OverallRadius, std::vector<e19::draw_vert>& Verts)
+    {
+        const float S = OverallRadius * 0.05f;
+        for (int i = 0; i < int(World.size()) && i < int(Intents.size()); ++i)
+        {
+            const auto Intent = static_cast<xskeleton::intent>(Intents[i]);
+            if (Intent == xskeleton::intent::NONE || Intent >= xskeleton::intent::COUNT) continue;
+            if (Verts.size() > std::size_t(g_MaxWedgeVertices - 160)) break;
+
+            const bool          bSel  = SelectedBones.count(i) != 0, bHov = i == HoveredBone;
+            const std::uint32_t C     = IntentColor(Intent, i < int(Suggested.size()) && Suggested[i]);
+            const xmath::fvec3  P     = World[i].m_Position;
+            xmath::fvec3        F     = World[i].m_Up;      if (F.Length() < 1e-6f) F = xmath::fvec3(0, 0, 1); F.Normalize();
+            xmath::fvec3        R     = World[i].m_Right;   if (R.Length() < 1e-6f) R = xmath::fvec3(1, 0, 0); R.Normalize();
+            const xmath::fvec3  U     = R.Cross(F).NormalizeSafeCopy();
+            const auto Line  = [&](const xmath::fvec3& A, const xmath::fvec3& B, bool bDashed = false) { EmitEdge(Verts, A, B, bDashed, Style, bSel, bHov, C); };
+            const auto Ring  = [&](const xmath::fvec3& Center, const xmath::fvec3& X, const xmath::fvec3& Y, float Radius)
+            {
+                constexpr int N = 20;
+                for (int k = 0; k < N; ++k)
+                {
+                    const float a0 = 2.0f * std::numbers::pi_v<float> * k / N, a1 = 2.0f * std::numbers::pi_v<float> * (k + 1) / N;
+                    Line(Center + (X * std::cos(a0) + Y * std::sin(a0)) * Radius, Center + (X * std::cos(a1) + Y * std::sin(a1)) * Radius);
+                }
+            };
+            const auto Arrow = [&](const xmath::fvec3& From, const xmath::fvec3& Dir, const xmath::fvec3& Side, float Length)
+            {
+                const xmath::fvec3 Tip = From + Dir * Length;
+                Line(From, Tip);
+                Line(Tip, Tip - Dir * (Length * 0.3f) + Side * (Length * 0.2f));
+                Line(Tip, Tip - Dir * (Length * 0.3f) - Side * (Length * 0.2f));
+            };
+
+            switch (Intent)
+            {
+            case xskeleton::intent::MOTION:
+            {
+                // On the ground plane (Y up): a ring and the forward direction flattened onto it
+                const xmath::fvec3 Up(0, 1, 0);
+                xmath::fvec3 Fg = F - Up * F.Dot(Up); if (Fg.Length() < 1e-4f) Fg = xmath::fvec3(0, 0, 1); Fg.Normalize();
+                const xmath::fvec3 Sg = Up.Cross(Fg).NormalizeSafeCopy();
+                Ring(P, Fg, Sg, S * 1.6f);
+                Arrow(P, Fg, Sg, S * 2.6f);
+                break;
+            }
+            case xskeleton::intent::FACING:
+                Arrow(P, F, R, S * 2.4f);
+                Ring(P, R, U, S * 0.35f);
+                break;
+            case xskeleton::intent::LOOK_AT:
+                Ring(P, R, U, S * 0.8f);
+                Ring(P, R, U, S * 0.25f);
+                Line(P, P + F * (S * 3.0f), true);
+                break;
+            case xskeleton::intent::IK_TARGET:
+            {
+                const float h = S * 0.6f;
+                const xmath::fvec3 X = R * h, Y = F * h, Z = U * h;
+                const xmath::fvec3 c[8] = { P - X - Y - Z, P + X - Y - Z, P + X + Y - Z, P - X + Y - Z, P - X - Y + Z, P + X - Y + Z, P + X + Y + Z, P - X + Y + Z };
+                for (int k = 0; k < 4; ++k) { Line(c[k], c[(k + 1) & 3]); Line(c[k + 4], c[((k + 1) & 3) + 4]); Line(c[k], c[k + 4]); }
+                break;
+            }
+            default: break;
+            }
+        }
+    }
+
+    // The solid body of each intent glyph (the fill pass, shaded like the bones, see-through): what reads at a glance. BuildIntentGlyphs
+    // draws the same shapes' thin outline on top. Same sizes and axes as BuildIntentGlyphs.
+    inline void BuildIntentGlyphFills(const std::vector<bone_world>& World, std::span<const std::uint8_t> Intents, std::span<const std::uint8_t> Suggested
+                                     , const wedge_style& Style, const std::set<int>& SelectedBones, int HoveredBone, float OverallRadius, std::vector<e19::draw_vert>& Verts)
+    {
+        const float S = OverallRadius * 0.05f;
+        constexpr int N = 16;
+        for (int i = 0; i < int(World.size()) && i < int(Intents.size()); ++i)
+        {
+            const auto Intent = static_cast<xskeleton::intent>(Intents[i]);
+            if (Intent == xskeleton::intent::NONE || Intent >= xskeleton::intent::COUNT) continue;
+            if (Verts.size() > std::size_t(g_MaxWedgeVertices - 600)) break;
+
+            const bool          bSel  = SelectedBones.count(i) != 0, bHov = i == HoveredBone;
+            const bool          bSugg = i < int(Suggested.size()) && Suggested[i];
+            std::uint32_t       Base  = bSel ? Style.m_SelectedColor : (IntentColor(Intent, false) & 0x00FFFFFFu);
+            if (bHov && !bSel) Base = ScaleColorRGB(Base, Style.m_HoverBoost);
+            const std::uint32_t C     = (Base & 0x00FFFFFFu) | (std::uint32_t((bSel || bHov) ? 235 : bSugg ? 90 : 185) << 24);
+            const auto Tri = [&](const xmath::fvec3& A, const xmath::fvec3& B, const xmath::fvec3& D) { EmitTri(Verts, A, B, D, FaceLit(A, B, D, Style.m_CameraPos, C)); };
+            const auto Quad = [&](const xmath::fvec3& A, const xmath::fvec3& B, const xmath::fvec3& D, const xmath::fvec3& E) { Tri(A, B, D); Tri(A, D, E); };
+            const auto Dir = [](float a, const xmath::fvec3& X, const xmath::fvec3& Y) { return X * std::cos(a) + Y * std::sin(a); };
+            const float Step = 2.0f * std::numbers::pi_v<float> / N;
+
+            const xmath::fvec3  P = World[i].m_Position;
+            xmath::fvec3        F = World[i].m_Up;      if (F.Length() < 1e-6f) F = xmath::fvec3(0, 0, 1); F.Normalize();
+            xmath::fvec3        R = World[i].m_Right;   if (R.Length() < 1e-6f) R = xmath::fvec3(1, 0, 0); R.Normalize();
+            const xmath::fvec3  U = R.Cross(F).NormalizeSafeCopy();
+
+            // A cone (base at From, point along Axis) and a cylinder, closed
+            const auto Cone = [&](const xmath::fvec3& From, const xmath::fvec3& Axis, const xmath::fvec3& X, const xmath::fvec3& Y, float Radius, float Length)
+            {
+                const xmath::fvec3 Tip = From + Axis * Length;
+                for (int k = 0; k < N; ++k)
+                {
+                    const xmath::fvec3 A = From + Dir(k * Step, X, Y) * Radius, B = From + Dir((k + 1) * Step, X, Y) * Radius;
+                    Tri(Tip, A, B); Tri(From, B, A);
+                }
+            };
+            const auto Cylinder = [&](const xmath::fvec3& From, const xmath::fvec3& Axis, const xmath::fvec3& X, const xmath::fvec3& Y, float Radius, float Length)
+            {
+                const xmath::fvec3 To = From + Axis * Length;
+                for (int k = 0; k < N; ++k)
+                {
+                    const xmath::fvec3 a = Dir(k * Step, X, Y) * Radius, b = Dir((k + 1) * Step, X, Y) * Radius;
+                    Quad(From + a, To + a, To + b, From + b);
+                    Tri(From, From + b, From + a); Tri(To, To + a, To + b);
+                }
+            };
+            const auto Box = [&](const xmath::fvec3& Ctr, const xmath::fvec3& X, const xmath::fvec3& Y, const xmath::fvec3& Z)
+            {
+                const xmath::fvec3 c[8] = { Ctr - X - Y - Z, Ctr + X - Y - Z, Ctr + X + Y - Z, Ctr - X + Y - Z, Ctr - X - Y + Z, Ctr + X - Y + Z, Ctr + X + Y + Z, Ctr - X + Y + Z };
+                Quad(c[0], c[3], c[2], c[1]); Quad(c[4], c[5], c[6], c[7]); Quad(c[0], c[1], c[5], c[4]);
+                Quad(c[2], c[3], c[7], c[6]); Quad(c[1], c[2], c[6], c[5]); Quad(c[0], c[4], c[7], c[3]);
+            };
+
+            switch (Intent)
+            {
+            case xskeleton::intent::MOTION:
+            {
+                // A thick ring lying on the ground and a flat arrow on it, along the forward flattened onto the ground (Y up)
+                const xmath::fvec3 Up(0, 1, 0);
+                xmath::fvec3 Fg = F - Up * F.Dot(Up); if (Fg.Length() < 1e-4f) Fg = xmath::fvec3(0, 0, 1); Fg.Normalize();
+                const xmath::fvec3 Sg = Up.Cross(Fg).NormalizeSafeCopy();
+                const float r0 = S * 1.35f, r1 = S * 1.75f, h = S * 0.12f;
+                for (int k = 0; k < N * 2; ++k)
+                {
+                    const float a0 = k * Step * 0.5f, a1 = (k + 1) * Step * 0.5f;
+                    const xmath::fvec3 i0 = P + Dir(a0, Fg, Sg) * r0, i1 = P + Dir(a1, Fg, Sg) * r0, o0 = P + Dir(a0, Fg, Sg) * r1, o1 = P + Dir(a1, Fg, Sg) * r1;
+                    Quad(i0 + Up * h, o0 + Up * h, o1 + Up * h, i1 + Up * h);           // top
+                    Quad(o0, o0 + Up * h, o1 + Up * h, o1);                               // outer wall
+                    Quad(i0, i1, i1 + Up * h, i0 + Up * h);                               // inner wall
+                }
+                // the arrow: a flat shaft and a flat head, a slab of height h
+                const float w = S * 0.22f, L = S * 2.6f, hl = S * 0.8f, hw = S * 0.6f;
+                const xmath::fvec3 a = P - Sg * w, b = P + Sg * w, c = P + Fg * (L - hl) + Sg * w, d = P + Fg * (L - hl) - Sg * w;
+                Quad(a + Up * h, b + Up * h, c + Up * h, d + Up * h);
+                const xmath::fvec3 t = P + Fg * L, l = P + Fg * (L - hl) - Sg * hw, rr = P + Fg * (L - hl) + Sg * hw;
+                Tri(l + Up * h, rr + Up * h, t + Up * h);
+                Quad(l, rr, rr + Up * h, l + Up * h); Quad(rr, t, t + Up * h, rr + Up * h); Quad(t, l, l + Up * h, t + Up * h);
+                break;
+            }
+            case xskeleton::intent::FACING:
+                Cylinder(P, F, R, U, S * 0.14f, S * 1.6f);
+                Cone(P + F * (S * 1.6f), F, R, U, S * 0.38f, S * 0.8f);
+                break;
+            case xskeleton::intent::LOOK_AT:
+            {
+                // A small sphere (the eye)
+                const float Rad = S * 0.55f;
+                constexpr int Lat = 8;
+                for (int la = 0; la < Lat; ++la)
+                {
+                    const float t0 = std::numbers::pi_v<float> * la / Lat, t1 = std::numbers::pi_v<float> * (la + 1) / Lat;
+                    for (int k = 0; k < N; ++k)
+                    {
+                        const auto Pt = [&](float t, float a) { return P + (F * std::cos(t) + Dir(a, R, U) * std::sin(t)) * Rad; };
+                        Quad(Pt(t0, k * Step), Pt(t1, k * Step), Pt(t1, (k + 1) * Step), Pt(t0, (k + 1) * Step));
+                    }
+                }
+                break;
+            }
+            case xskeleton::intent::IK_TARGET:
+                Box(P, R * (S * 0.6f), F * (S * 0.6f), U * (S * 0.6f));
+                break;
+            default: break;
+            }
+        }
+    }
+
+    // The tree's icon: the same shape as the 3D glyph, in a Size x Size square at Min
+    inline void DrawIntentIcon(ImDrawList& DL, ImVec2 Min, float Size, xskeleton::intent Intent, bool bSuggested) noexcept
+    {
+        const ImU32  C   = IntentColor(Intent, bSuggested);
+        const ImVec2 Ctr = ImVec2(Min.x + Size * 0.5f, Min.y + Size * 0.5f);
+        const float  r   = Size * 0.42f;
+        switch (Intent)
+        {
+        case xskeleton::intent::MOTION:
+            DL.AddCircle(Ctr, r, C, 16, 1.5f);
+            DL.AddLine(ImVec2(Ctr.x, Ctr.y + r * 0.5f), ImVec2(Ctr.x, Ctr.y - r * 0.9f), C, 1.5f);
+            DL.AddTriangleFilled(ImVec2(Ctr.x, Ctr.y - r * 1.1f), ImVec2(Ctr.x - r * 0.4f, Ctr.y - r * 0.45f), ImVec2(Ctr.x + r * 0.4f, Ctr.y - r * 0.45f), C);
+            break;
+        case xskeleton::intent::FACING:
+            DL.AddLine(ImVec2(Ctr.x - r, Ctr.y), ImVec2(Ctr.x + r * 0.5f, Ctr.y), C, 2.0f);
+            DL.AddTriangleFilled(ImVec2(Ctr.x + r, Ctr.y), ImVec2(Ctr.x + r * 0.3f, Ctr.y - r * 0.5f), ImVec2(Ctr.x + r * 0.3f, Ctr.y + r * 0.5f), C);
+            break;
+        case xskeleton::intent::LOOK_AT:
+            DL.AddCircle(Ctr, r, C, 16, 1.5f);
+            DL.AddCircleFilled(Ctr, r * 0.35f, C, 12);
+            break;
+        case xskeleton::intent::IK_TARGET:
+            DL.AddRect(ImVec2(Ctr.x - r * 0.75f, Ctr.y - r * 0.75f), ImVec2(Ctr.x + r * 0.75f, Ctr.y + r * 0.75f), C, 0.0f, 0, 1.5f);
+            DL.AddCircleFilled(Ctr, r * 0.2f, C, 8);
+            break;
+        default: break;
+        }
+    }
+
     inline void PickWedge(const xskeleton::skeleton& Skeleton, const std::vector<bone_world>& World, const xmath::fvec3& Origin, const xmath::fvec3& Dir, float OverallRadius, int& OutBone, float& OutT)
     {
         OutBone = -1;
