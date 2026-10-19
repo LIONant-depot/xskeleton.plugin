@@ -329,8 +329,16 @@ namespace xskeleton_compiler
                     return xerr::create_f<state, "Failed while opening the details.txt so it can't be saved">(Err);
 
                 xproperty::settings::context C{};
-                if (auto Err = xproperty::sprop::serializer::Stream(File, m_Details, C); Err)
-                    return xerr::create_f<state, "Failed while serializing details.txt">(Err);
+                // A tree too deep for xproperty's paths is saved apart, in its own table after the properties
+                m_Details.m_bCompactTree = xskeleton_desc::details::Depth(m_Details.m_RootBone) > xskeleton_desc::details::compact_depth_v;
+                xskeleton_desc::details::bone Tree;
+                if (m_Details.m_bCompactTree) std::swap(Tree, m_Details.m_RootBone);
+                auto Err = xproperty::sprop::serializer::Stream(File, m_Details, C);
+                if (m_Details.m_bCompactTree) std::swap(Tree, m_Details.m_RootBone);
+                if (Err) return xerr::create_f<state, "Failed while serializing details.txt">(Err);
+                if (m_Details.m_bCompactTree)
+                    if (auto Err2 = m_Details.StreamCompactTree(File, m_Details.m_RootBone); Err2)
+                        return xerr::create_f<state, "Failed while serializing the bone tree of details.txt">(Err2);
             }
 
             //

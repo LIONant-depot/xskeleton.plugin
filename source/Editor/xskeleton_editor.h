@@ -472,7 +472,8 @@ namespace xskeleton_editor
             if (!File.Open(true, m_Document.m_LogPath + L"\\Details.txt", {}))
             {
                 xproperty::settings::context Context;
-                if (xproperty::sprop::serializer::Stream(File, m_Details, Context)) m_Details = {};
+                if (xproperty::sprop::serializer::Stream(File, m_Details, Context)
+                 || (m_Details.m_bCompactTree && m_Details.StreamCompactTree(File, m_Details.m_RootBone))) m_Details = {};
             }
             const auto Before = m_Document.Snapshot();
             pDesc->MergeWithDetails(m_Details);

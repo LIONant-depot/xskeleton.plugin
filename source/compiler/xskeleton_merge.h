@@ -155,7 +155,10 @@ namespace xskeleton_desc::merge
         // principled way to pick which of them should become the new sole root - every downstream
         // consumer (see xskeleton.h) assumes exactly one, at index 0.
         if (const int nRoots = static_cast<int>(std::count_if(Out.begin(), Out.end(), [](const merged_bone& B) { return B.m_iParent == -1; })); nRoots != 1)
+        {
+            for (auto& B : Out) if (B.m_iParent == -1) Warning(std::format("Root bone left: '{}'", B.m_Name));
             return xerr::create_f<T_STATE, "Deleting these bones would leave the skeleton with more than one root bone with no single, unambiguous replacement - delete fewer bones along this chain, or keep one of them">();
+        }
 
         for (auto& Bone : Out)
         {
