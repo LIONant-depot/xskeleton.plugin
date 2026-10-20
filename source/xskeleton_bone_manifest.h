@@ -77,6 +77,13 @@ namespace xskeleton_desc
         xmath::fvec3               m_PreTransformRotationDeg = xmath::fvec3::fromZero();
         xmath::fvec3               m_PreTransformTranslation = xmath::fvec3::fromZero();
 
+        // The descriptor's PostTransform, the same way: the correction between the frozen pose / the animations and the bind data of the skins. The skeleton applies it
+        // (then the PreTransform) to its own frozen pose; a clip's root is in the raw import space, so it takes the same two corrections, this one first. The skins do not
+        // take it: they are bound to the bind pose, which the PreTransform alone moves.
+        xmath::fvec3               m_PostTransformScale       = xmath::fvec3::fromOne();
+        xmath::fvec3               m_PostTransformRotationDeg = xmath::fvec3::fromZero();
+        xmath::fvec3               m_PostTransformTranslation = xmath::fvec3::fromZero();
+
         XPROPERTY_DEF
         ( "bone_manifest", bone_manifest
         , obj_member<"Bones",                     &bone_manifest::m_Bones,                     member_flags<flags::SHOW_READONLY> >
@@ -84,6 +91,9 @@ namespace xskeleton_desc
         , obj_member<"PreTransformScale",         &bone_manifest::m_PreTransformScale,         member_flags<flags::SHOW_READONLY> >
         , obj_member<"PreTransformRotationDeg",   &bone_manifest::m_PreTransformRotationDeg,   member_flags<flags::SHOW_READONLY> >
         , obj_member<"PreTransformTranslation",   &bone_manifest::m_PreTransformTranslation,   member_flags<flags::SHOW_READONLY> >
+        , obj_member<"PostTransformScale",        &bone_manifest::m_PostTransformScale,        member_flags<flags::SHOW_READONLY> >
+        , obj_member<"PostTransformRotationDeg",  &bone_manifest::m_PostTransformRotationDeg,  member_flags<flags::SHOW_READONLY> >
+        , obj_member<"PostTransformTranslation",  &bone_manifest::m_PostTransformTranslation,  member_flags<flags::SHOW_READONLY> >
         )
     };
     XPROPERTY_REG(bone_manifest)

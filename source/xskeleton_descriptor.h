@@ -231,6 +231,7 @@ namespace xskeleton_desc
 
         std::wstring                m_ImportAsset   = {};
         transform                    m_PreTransform  = {};    // Author-time scale/origin correction applied before compiling (imported skeletons are often at the wrong scale/pivot).
+        transform                    m_PostTransform = {};    // The correction between the frozen pose / the animations and the bind data of the skins (the model was rotated while it was animated): applied to the frozen pose (the rest of the root) BEFORE the PreTransform, and to the root of every clip of the animations that use this skeleton, in the same way: both agree. Not to the bind data nor the skins.
         bone                         m_RootBone      = {};    // A skeleton has exactly one root (matches the existing runtime convention: bone 0 is always the sole root) - reached through this field rather than through someone else's m_Bones, but otherwise an ordinary `bone`, same shape as any other.
         std::vector<mask_group>     m_MaskGroups    = {};
         bool                        m_bCompactTree  = false;  // the bone tree is too deep for xproperty's paths: RootBone is empty in the properties, the tree follows as the "BoneOverrides" table
@@ -333,6 +334,7 @@ namespace xskeleton_desc
         ( "Skeleton", descriptor
         , obj_member<"ImportAsset",     &descriptor::m_ImportAsset, member_ui<std::wstring>::file_dialog<mesh_filter_v, true, 1> >
         , obj_member<"PreTransform",    &descriptor::m_PreTransform >
+        , obj_member<"PostTransform",   &descriptor::m_PostTransform, member_help<"Applied to the frozen pose (the rest of the root bone) before the PreTransform, and to the root bone of every frame of every clip of the animations that use this skeleton, in the same way. Use it when the frozen pose and the animations are rotated against the bind pose the skin is bound with (the model was rotated while it was animated). It does not move the bind pose or the skins: those follow the PreTransform only. It is baked in when they compile: no runtime cost.">>
         , obj_member<"RootBone",        &descriptor::m_RootBone >
         , obj_member<"MaskGroups",      &descriptor::m_MaskGroups >
         , obj_member<"CompactTree",     &descriptor::m_bCompactTree, member_flags<flags::DONT_SHOW> >

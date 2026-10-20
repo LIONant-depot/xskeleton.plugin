@@ -262,6 +262,9 @@ namespace xskeleton_desc::merge
         Manifest.m_PreTransformScale       = Descriptor.m_PreTransform.m_Scale;
         Manifest.m_PreTransformRotationDeg = Descriptor.m_PreTransform.m_Rotation;
         Manifest.m_PreTransformTranslation = Descriptor.m_PreTransform.m_Translation;
+        Manifest.m_PostTransformScale       = Descriptor.m_PostTransform.m_Scale;
+        Manifest.m_PostTransformRotationDeg = Descriptor.m_PostTransform.m_Rotation;
+        Manifest.m_PostTransformTranslation = Descriptor.m_PostTransform.m_Translation;
     }
 
     // The whole manifest of a skeleton without overrides (what an imported skeleton starts as): what the skin compiler binds its bones to

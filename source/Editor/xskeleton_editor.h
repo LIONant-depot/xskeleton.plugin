@@ -383,6 +383,7 @@ namespace xskeleton_editor
         xeditor::transform_gizmo::state                         m_Gizmo;                    // the Move / Rotate / Scale gizmo of the view: the descriptor's PreTransform
         xeditor::transform_gizmo::actions                       m_GizmoActions{ m_Gizmo };  // its keys (Preview/ToolMove...)
         xeditor::transform_gizmo::pre                           m_Compiled;                 // the PreTransform the loaded skeleton was compiled with: the view shows the one being edited against it
+        xeditor::transform_gizmo::pre                           m_CompiledPost;             // and its PostTransform
         void RegisterActions(ximgui::actions::context& Ctx) noexcept override { Ctx.Scope(m_GizmoActions, "Preview"); }
         xeditor::camera_cmds                                    m_CameraCmds;
         view_settings                                           m_Settings;
@@ -503,7 +504,8 @@ namespace xskeleton_editor
             m_Ref.m_Instance = m_Document.m_Guid.m_Instance;
             auto* pSkeleton = xresource::g_Mgr.getResource(m_Ref);
             if (!pSkeleton) { m_Ref.clear(); m_ErrorMessage = "The compiled skeleton could not be loaded."; return; }
-            m_Compiled = xeditor::transform_gizmo::PreOf(pDesc->m_PreTransform);
+            m_Compiled     = xeditor::transform_gizmo::PreOf(pDesc->m_PreTransform);
+            m_CompiledPost = xeditor::transform_gizmo::PreOf(pDesc->m_PostTransform);
 
             ComputePoses(*pSkeleton);
             const auto Bones = pSkeleton->getBones();
@@ -966,8 +968,15 @@ namespace xskeleton_editor
             // The PreTransform being edited (the gizmo, the inspector), before it is compiled: the compiled bones moved from the one they were compiled with
             if (auto* pDesc = Desc())
             {
-                const xmath::fmat4 Pending = xeditor::transform_gizmo::PendingTransform(m_Compiled, xeditor::transform_gizmo::PreOf(pDesc->m_PreTransform));
-                if (!(m_Compiled == xeditor::transform_gizmo::PreOf(pDesc->m_PreTransform)))
+                // (the pose moves from the corrections it was compiled with to the ones it has now)
+                namespace tg = xeditor::transform_gizmo;
+                // (the bind pose is moved by the PreTransform alone; the frozen pose by both: the PostTransform is for the frozen pose and the animations)
+                const bool  bBind = m_Settings.m_Pose == pose_mode::BIND;
+                const auto  Same = m_Compiled == tg::PreOf(pDesc->m_PreTransform) && (bBind || m_CompiledPost == tg::PreOf(pDesc->m_PostTransform));
+                const auto  Was  = tg::Matrix(m_Compiled) * (bBind ? xmath::fmat4::fromIdentity() : tg::Matrix(m_CompiledPost));
+                const auto  Now  = tg::Matrix(tg::PreOf(pDesc->m_PreTransform)) * (bBind ? xmath::fmat4::fromIdentity() : tg::Matrix(tg::PreOf(pDesc->m_PostTransform)));
+                const xmath::fmat4 Pending = Same ? xmath::fmat4::fromIdentity() : Now * Was.Inverse();
+                if (!Same)
                     for (auto& W : m_Scaled)
                     {
                         const xmath::fvec3 P = Pending * W.m_Position;

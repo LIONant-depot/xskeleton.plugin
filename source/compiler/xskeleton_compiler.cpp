@@ -62,9 +62,20 @@ namespace xskeleton_compiler
         // pose (and the rest of the UI) had already moved on: the visible symptom was a correctly
         // shrunk/repositioned skeleton with a wildly oversized root sphere, since its size is derived
         // from the overall bounding radius across BOTH pose views.
+        // The frozen pose is put in the engine's space by the two corrections of the descriptor, the PostTransform first, then the PreTransform.
+        //  - the PreTransform (scale/pivot of the import) moves everything of the skeleton: its rest pose AND the bind data the skins are bound with (the inverse bind
+        //    matrices); the skins follow it (their vertices take it too);
+        //  - the PostTransform (the model was rotated while it was animated) is for what lives in the space of the animation: the frozen pose (the rest of the root) and
+        //    the root of every clip, which take it in the same way (the manifest carries it). It does not touch the bind data nor the skins: where the skin is bound is
+        //    where the mesh is, the correction is only between that and the rest/animation space.
         void ApplyPreTransform()
         {
-            const auto& PT = m_Descriptor.m_PreTransform;
+            ApplyTransform(m_Descriptor.m_PostTransform, false);
+            ApplyTransform(m_Descriptor.m_PreTransform,  true);
+        }
+
+        void ApplyTransform(const xskeleton_desc::transform& PT, bool bAlsoTheBindData)
+        {
             if (   PT.m_Scale       == xmath::fvec3::fromOne()
                 && PT.m_Rotation    == xmath::fvec3::fromZero()
                 && PT.m_Translation == xmath::fvec3::fromZero() )
@@ -92,7 +103,7 @@ namespace xskeleton_compiler
                 // every such bone then reported the SAME single point (wherever M places the origin)
                 // as its BIND position instead of falling back, producing the degenerate/collapsed
                 // geometry seen in the BIND pose view.
-                if (!Bone.m_BindMatrixInv.isIdentity())
+                if (bAlsoTheBindData && !Bone.m_BindMatrixInv.isIdentity())
                     Bone.m_BindMatrixInv = Bone.m_BindMatrixInv * MInv;
 
                 if (Bone.m_iParent != -1) continue;
@@ -331,6 +342,17 @@ namespace xskeleton_compiler
                     for (int i = 0; i < m_FinalSkeleton.m_nBones; ++i)
                         if (!m_FinalSkeleton.m_pBones[i].m_InvBindPose.isIdentity())
                             Joints.push_back(m_FinalSkeleton.m_pBones[i].m_InvBindPose.Inverse() * xmath::fvec3::fromZero());
+                    // How the frozen pose (the rest of the root bone) turns into the bind pose the skin is bound with: where the three axes of the rest go. The identity when the two
+                    // agree; when they do not, the Frozen view of a skin shows the mesh turned, and this is the rotation a PostTransform would have to give the frozen pose.
+                    if (m_FinalSkeleton.m_nBones > 0 && !m_FinalSkeleton.m_pBones[0].m_InvBindPose.isIdentity())
+                    {
+                        const xmath::fmat4 Rest  = m_FinalSkeleton.m_pBoneRests[0].m_RestPose.toMatrix();
+                        const xmath::fmat4 Bind  = m_FinalSkeleton.m_pBones[0].m_InvBindPose.Inverse();
+                        const xmath::fmat4 Turn  = Bind * Rest.Inverse();
+                        const auto Dir = [&](const xmath::fvec3& V) { const xmath::fvec3 R = Turn * V - Turn * xmath::fvec3::fromZero(); return R.Length() > 1.0e-12f ? R.NormalizeCopy() : R; };
+                        const auto X = Dir({ 1, 0, 0 }), Y = Dir({ 0, 1, 0 }), Z = Dir({ 0, 0, 1 });
+                        LogMessage(xresource_pipeline::msg_type::INFO, std::format("Root rest to bind: X goes to {:.3f} {:.3f} {:.3f}, Y to {:.3f} {:.3f} {:.3f}, Z to {:.3f} {:.3f} {:.3f}", X.m_X, X.m_Y, X.m_Z, Y.m_X, Y.m_Y, Y.m_Z, Z.m_X, Z.m_Y, Z.m_Z));
+                    }
                     if (!Joints.empty())
                     {
                         const xmath::fbbox Box{ std::span<const xmath::fvec3>(Joints) };
