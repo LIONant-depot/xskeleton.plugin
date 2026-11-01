@@ -64,6 +64,7 @@ namespace xskeleton_editor
                 if (m_BusyGuid != Guid) return false;
                 if (!m_bReadbackDone) return false;
                 m_bBusy = false;
+                Forget(Guid);           // (read back: the GPU is done with it - held longer, its references kept replaced data alive)
                 if (m_ReadbackWidth != static_cast<int>(s_CellPixels) || m_ReadbackHeight != static_cast<int>(s_CellPixels)) return false;
 
                 OutBitmap.CreateBitmap(static_cast<int>(s_CellPixels), static_cast<int>(s_CellPixels));
@@ -116,6 +117,15 @@ namespace xskeleton_editor
         }
 
     private:
+        // Lets go of what a thumbnail was drawn from once it is read back. Held until the cache's eviction instead, a reference kept
+        // data a replacement left behind alive for good (a texture moving to fewer mips, a recompile): nothing asked for it again to move
+        // the reference - the Bistro's thumbnail kept every one of its old texture images (2026-11-01)
+        void Forget(const xresource::full_guid& Guid) noexcept
+        {
+            if (auto It = m_Refs.find(Guid); It != m_Refs.end()) { xresource::g_Mgr.ReleaseRef(It->second); m_Refs.erase(It); }
+            m_Order.remove(Guid);
+        }
+
         static bool Ok(xgpu::device::error* pErr) noexcept
         {
             if (!pErr) return true;
