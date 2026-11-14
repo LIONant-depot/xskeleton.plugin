@@ -176,6 +176,7 @@ namespace xskeleton_editor
     struct wedge_style
     {
         xmath::fvec3    m_CameraPos         {};
+        bool            m_bLeadsToSelected  = true;     // the wedge that ENDS at a selected bone is lit too (the skeleton editor); false: only the selected bone's own wedge (an editor that marks bones from outside)
         float           m_NearDepth         = 1.0f;
         float           m_FarDepth          = 15.0f;
         std::uint32_t   m_BackgroundColor   = IM_COL32(115, 115, 115, 255); // matches the viewport's own 0.45 gray
@@ -433,7 +434,7 @@ namespace xskeleton_editor
             // same in both poses - it never encoded bind-data confidence (BuildWedgeFillGeometry no
             // longer does either, see FillAlphaScale's own comment).
             const bool          bSelected  = SelectedBones.count(iParent) != 0;                                     // the wedge is part of its parent bone (EdgeDrawModes)
-            const bool          bHovered   = iParent == HoveredBone || (!bSelected && SelectedBones.count(i) != 0);  // leads to a selected bone
+            const bool          bHovered   = iParent == HoveredBone || (Style.m_bLeadsToSelected && !bSelected && SelectedBones.count(i) != 0);  // leads to a selected bone
             const bool          bVirtual   = Bones[i].m_Flags.m_bVirtual;
             const bool          bTwist     = i < int(IsTwistBone.size()) && IsTwistBone[i];
             const bool          bDashed    = (bVirtual || bTwist) && !bSelected;
@@ -556,9 +557,14 @@ namespace xskeleton_editor
         float   m_CameraDist;
     };
 
-    inline void BuildWedgeFillGeometry(const xskeleton::skeleton& Skeleton, const std::vector<bone_world>& World, const std::vector<bool>& IsTwistBone, const wedge_style& Style, const std::set<int>& SelectedBones, float OverallRadius, render_color_mode Mode, int MaskGroupIdx, int HoveredBone, std::vector<e19::draw_vert>& Verts)
+    // One object's slice of the fill vertices and how far it is from the camera: a viewport drawing several skeletons merges them far to near by these (an object of one skeleton in front
+    // of an object of another must blend over it, which sorting each skeleton on its own cannot give)
+    struct fill_chunk { float m_CameraDist; std::size_t m_First, m_Count; };
+
+    inline void BuildWedgeFillGeometry(const xskeleton::skeleton& Skeleton, const std::vector<bone_world>& World, const std::vector<bool>& IsTwistBone, const wedge_style& Style, const std::set<int>& SelectedBones, float OverallRadius, render_color_mode Mode, int MaskGroupIdx, int HoveredBone, std::vector<e19::draw_vert>& Verts, std::vector<fill_chunk>* pChunks = nullptr)
     {
         Verts.clear();
+        if (pChunks) pChunks->clear();
 
         const auto Bones = Skeleton.getBones();
         if (World.size() != Bones.size()) return;
@@ -602,9 +608,10 @@ namespace xskeleton_editor
 
         for (auto& E : Entries)
         {
+            struct chunk_guard { std::vector<fill_chunk>* m_pC; std::vector<e19::draw_vert>& m_V; float m_D; std::size_t m_F; ~chunk_guard() { if (m_pC && m_V.size() > m_F) m_pC->push_back({ m_D, m_F, m_V.size() - m_F }); } } Guard{ pChunks, Verts, E.m_CameraDist, Verts.size() };
             const int   iOwner    = E.m_bIsRoot ? E.m_iBone : E.m_iParent;     // a wedge is part of its parent bone (EdgeDrawModes)
             const bool  bSelected = SelectedBones.count(iOwner) != 0;
-            const bool  bHovered  = iOwner == HoveredBone || (!bSelected && SelectedBones.count(E.m_iBone) != 0);
+            const bool  bHovered  = iOwner == HoveredBone || (Style.m_bLeadsToSelected && !bSelected && SelectedBones.count(E.m_iBone) != 0);
 
             if (E.m_bIsRoot)
             {

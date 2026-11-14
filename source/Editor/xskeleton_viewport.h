@@ -30,11 +30,13 @@ namespace xskeleton_editor
         int                                 m_Hovered     = -1;
         render_color_mode                   m_ColorMode   = render_color_mode::NORMAL_RENDER;
         int                                 m_MaskGroup   = -1;
+        bool                                m_bLeadsToSelected = true;          // false: a selected bone lights only its own wedge, not the one leading to it
         bool                                m_bOutlineOnly = false;             // true: outlines without the translucent fills (and so without shadows)
     };
 
     struct skeleton_viewport
     {
+        bool                    m_bHoverRect = false, m_bHoverWin = false; ImVec2 m_DbgMin = {}, m_DbgSize = {};
         bool                    m_bGizmoHot = false, m_bGizmoDrag = false;      // set by an editor that runs a transform gizmo over the view, before Render
         runtime                 m_Scene;                    // the skeleton editor's own scene (outline, fill, shadow); public: the editors wire the camera commands and toolbar to it, and set the subject's centre and radius
         const bool*             m_pOpen = nullptr;          // when set and false, the render callback draws nothing (the panel's window is closed)
@@ -72,7 +74,8 @@ namespace xskeleton_editor
             const ImVec2 Avail = ImGui::GetContentRegionAvail();
             const ImVec2 Min   = ImGui::GetCursorScreenPos();
             m_Min = Min; m_Size = Avail;
-            m_bOver = ImGui::IsMouseHoveringRect(Min, ImVec2(Min.x + Avail.x, Min.y + Avail.y)) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+            m_DbgMin = Min; m_DbgSize = Avail; m_bHoverRect = ImGui::IsMouseHoveringRect(Min, ImVec2(Min.x + Avail.x, Min.y + Avail.y)); m_bHoverWin = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);      // (also while a button is held: a drag onto a bone still sees the bone)
+            m_bOver = m_bHoverRect && m_bHoverWin;
             ImGui::GetWindowDrawList()->AddRectFilled(Min, ImVec2(Min.x + Avail.x, Min.y + Avail.y), IM_COL32(115, 115, 115, 255));        // the depth tint fades toward this
             if (m_bGizmoHot) ImGui::Dummy(Avail);          // a transform gizmo is hovered or dragged: it needs the hover (the keys and the camera still work; a drag keeps them out)
             else ImGui::InvisibleButton("##SkeletonViewport", Avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
@@ -83,7 +86,7 @@ namespace xskeleton_editor
             }
             m_Scene.UpdateView(Min, Avail.x, Avail.y);
 
-            m_Lines.clear(); m_Fills.clear();
+            m_Lines.clear(); m_Fills.clear(); m_Chunks.clear();
             const std::set<int> NoSelection; const std::vector<bool> NoTwist;
             for (const auto& It : Items)
             {
@@ -91,15 +94,24 @@ namespace xskeleton_editor
                 m_Moved.assign(It.m_Bones.begin(), It.m_Bones.end());
                 for (auto& B : m_Moved) B.m_Position = B.m_Position + It.m_Offset;
                 auto Style = m_Scene.Style();
+                Style.m_bLeadsToSelected = It.m_bLeadsToSelected;
                 if (It.m_NormalColor) Style.m_NormalColor = It.m_NormalColor;
                 const auto& Sel = It.m_pSelected ? *It.m_pSelected : NoSelection;
                 BuildWedgeGeometry(*It.m_pSkeleton, m_Moved, NoTwist, Style, Sel, m_Scene.m_Radius, It.m_ColorMode, It.m_MaskGroup, It.m_Hovered, m_Part, It.m_bOutlineOnly);
                 m_Lines.insert(m_Lines.end(), m_Part.begin(), m_Part.end());
                 if (!It.m_bOutlineOnly)
                 {
-                    BuildWedgeFillGeometry(*It.m_pSkeleton, m_Moved, NoTwist, Style, Sel, m_Scene.m_Radius, It.m_ColorMode, It.m_MaskGroup, It.m_Hovered, m_Part);
+                    BuildWedgeFillGeometry(*It.m_pSkeleton, m_Moved, NoTwist, Style, Sel, m_Scene.m_Radius, It.m_ColorMode, It.m_MaskGroup, It.m_Hovered, m_Part, &m_PartChunks);
+                    for (auto C : m_PartChunks) { C.m_First += m_Fills.size(); m_Chunks.push_back(C); }
                     m_Fills.insert(m_Fills.end(), m_Part.begin(), m_Part.end());
                 }
+            }
+            if (Items.size() > 1)       // several skeletons: their objects merged far to near, so one skeleton's bone in front of another's blends over it
+            {
+                std::stable_sort(m_Chunks.begin(), m_Chunks.end(), [](const fill_chunk& A, const fill_chunk& B) { return A.m_CameraDist > B.m_CameraDist; });
+                m_Sorted.clear(); m_Sorted.reserve(m_Fills.size());
+                for (const auto& C : m_Chunks) m_Sorted.insert(m_Sorted.end(), m_Fills.begin() + C.m_First, m_Fills.begin() + C.m_First + C.m_Count);
+                m_Fills.swap(m_Sorted);
             }
             m_Scene.SetLines(m_Lines);
             m_Scene.SetFill(m_Fills);
@@ -119,7 +131,8 @@ namespace xskeleton_editor
     private:
         ImVec2                          m_Min = {}, m_Size = {};
         bool                            m_bOver = false;
-        std::vector<e19::draw_vert>     m_Lines, m_Fills, m_Part;
+        std::vector<e19::draw_vert>     m_Lines, m_Fills, m_Part, m_Sorted;
+        std::vector<fill_chunk>         m_Chunks, m_PartChunks;
         std::vector<bone_world>         m_Moved;
     };
 }
