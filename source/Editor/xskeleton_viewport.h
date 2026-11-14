@@ -39,6 +39,30 @@ namespace xskeleton_editor
         const bool*             m_pOpen = nullptr;          // when set and false, the render callback draws nothing (the panel's window is closed)
 
         bool Init(xgpu::device& Device) noexcept { return m_Scene.Init(Device); }
+
+        // The mouse is over the panel (valid after Render)
+        bool Over(void) const noexcept { return m_bOver; }
+
+        // The bone of an item under a screen point: what is drawn is what picks (the skeleton editor's own PickWedge). T is the distance along the ray: of two items, the smaller wins.
+        bool PickBone(const viewport_item& It, const ImVec2& Mouse, int& iBone, float& T) noexcept
+        {
+            iBone = -1; T = 0;
+            if (!It.m_pSkeleton || It.m_Bones.size() != It.m_pSkeleton->getBones().size()) return false;
+            std::vector<bone_world> Moved(It.m_Bones.begin(), It.m_Bones.end());
+            for (auto& B : Moved) B.m_Position = B.m_Position + It.m_Offset;
+            const auto Dir = m_Scene.m_View.RayFromScreen(Mouse.x, Mouse.y);
+            PickWedge(*It.m_pSkeleton, Moved, m_Scene.m_View.getPosition(), Dir, m_Scene.m_Radius, iBone, T);
+            return iBone >= 0;
+        }
+
+        // A world position to the screen of this panel (for what an editor draws over it: links between bones, labels). False behind the camera. Valid after Render.
+        bool Project(const xmath::fvec3& P, ImVec2& Out) const noexcept
+        {
+            const xmath::fvec4 Clip = m_Scene.m_View.getW2C() * xmath::fvec4(P, 1.0f);
+            if (Clip.m_W <= 1.0e-4f) return false;
+            Out = ImVec2(m_Min.x + (Clip.m_X / Clip.m_W * 0.5f + 0.5f) * m_Size.x, m_Min.y + (Clip.m_Y / Clip.m_W * 0.5f + 0.5f) * m_Size.y);      // (the projection already flips Y for Vulkan: the skeleton editor's labels do the same)
+            return true;
+        }
         void Release() noexcept                  { m_Scene.Release(); }
 
         // The panel body. Call it where the viewport goes in the window; it takes the whole free area. Returns the screen rect it used (for overlays).
@@ -46,6 +70,8 @@ namespace xskeleton_editor
         {
             const ImVec2 Avail = ImGui::GetContentRegionAvail();
             const ImVec2 Min   = ImGui::GetCursorScreenPos();
+            m_Min = Min; m_Size = Avail;
+            m_bOver = ImGui::IsMouseHoveringRect(Min, ImVec2(Min.x + Avail.x, Min.y + Avail.y)) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
             ImGui::GetWindowDrawList()->AddRectFilled(Min, ImVec2(Min.x + Avail.x, Min.y + Avail.y), IM_COL32(115, 115, 115, 255));        // the depth tint fades toward this
             ImGui::InvisibleButton("##SkeletonViewport", Avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
             xeditor::PreviewGestures();
@@ -86,6 +112,8 @@ namespace xskeleton_editor
         }
 
     private:
+        ImVec2                          m_Min = {}, m_Size = {};
+        bool                            m_bOver = false;
         std::vector<e19::draw_vert>     m_Lines, m_Fills, m_Part;
         std::vector<bone_world>         m_Moved;
     };
