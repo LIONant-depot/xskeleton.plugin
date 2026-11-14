@@ -12,7 +12,7 @@ namespace xskeleton_desc
 {
     inline static constexpr auto    resource_type_guid_v    = xresource::type_guid(xresource::guid_generator::Instance64FromString("xSkeleton"));
 
-    static constexpr wchar_t        mesh_filter_v[]         = L"Skeleton\0 *.fbx; *.obj\0Any Thing\0 *.*\0";
+    static constexpr wchar_t        mesh_filter_v[]         = L"Skeleton\0 *.fbx; *.obj; *.blend\0Any Thing\0 *.*\0";
 
     // Author-time transform: Euler radians, not a quaternion - nothing here is ever blended or
     // interpolated (it's a static authored value, converted once by the compiler), so there's no
