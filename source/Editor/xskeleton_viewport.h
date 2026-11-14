@@ -88,11 +88,17 @@ namespace xskeleton_editor
 
             m_Lines.clear(); m_Fills.clear(); m_Chunks.clear();
             const std::set<int> NoSelection; const std::vector<bool> NoTwist;
+            xmath::fvec3 BMin( 1e30f,  1e30f,  1e30f), BMax(-1e30f, -1e30f, -1e30f);     // where the bones are this frame: the shadow's light is fitted to it
             for (const auto& It : Items)
             {
                 if (!It.m_pSkeleton || It.m_Bones.size() != It.m_pSkeleton->getBones().size()) continue;
                 m_Moved.assign(It.m_Bones.begin(), It.m_Bones.end());
-                for (auto& B : m_Moved) B.m_Position = B.m_Position + It.m_Offset;
+                for (auto& B : m_Moved)
+                {
+                    B.m_Position = B.m_Position + It.m_Offset;
+                    BMin = xmath::fvec3(std::min(BMin.m_X, B.m_Position.m_X), std::min(BMin.m_Y, B.m_Position.m_Y), std::min(BMin.m_Z, B.m_Position.m_Z));
+                    BMax = xmath::fvec3(std::max(BMax.m_X, B.m_Position.m_X), std::max(BMax.m_Y, B.m_Position.m_Y), std::max(BMax.m_Z, B.m_Position.m_Z));
+                }
                 auto Style = m_Scene.Style();
                 Style.m_bLeadsToSelected = It.m_bLeadsToSelected;
                 if (It.m_NormalColor) Style.m_NormalColor = It.m_NormalColor;
@@ -119,7 +125,17 @@ namespace xskeleton_editor
             // The light's view of the fills is rendered before the frame's UI (it opens a render pass of its own on the window)
             auto* pHost   = xeditor::host::current();
             auto* pWindow = pHost ? pHost->find<xgpu::window>() : nullptr;
-            if (pWindow) m_Scene.RenderShadow(*pWindow);
+            if (pWindow)
+            {
+                if (BMin.m_X <= BMax.m_X)
+                {
+                    BMin.m_Y = std::min(BMin.m_Y, 0.0f);        // down to the ground the shadow falls on
+                    const xmath::fvec3 C = (BMin + BMax) * 0.5f;
+                    const float R = std::max((BMax - BMin).Length() * 0.5f * 1.1f, 0.05f);
+                    m_Scene.RenderShadow(*pWindow, &C, R);
+                }
+                else m_Scene.RenderShadow(*pWindow);
+            }
 
             xgpu::tools::imgui::AddCustomRenderCallback([this](xgpu::cmd_buffer& CmdBuffer, const ImVec2&, const ImVec2&)
             {

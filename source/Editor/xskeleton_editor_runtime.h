@@ -122,17 +122,20 @@ namespace xskeleton_editor
             if (m_nFill) (void)m_FillVerts.MemoryMap(0, static_cast<int>(m_nFill), [&](void* pData) { std::memcpy(pData, Verts.data(), m_nFill * sizeof(e19::draw_vert)); });
         }
 
-        // The fills seen from a light that keeps its direction while the camera orbits, refitted to the skeleton every frame. Opens its own render
-        // pass on the window: it must run before the frame's UI is rendered.
-        void RenderShadow(xgpu::window& Window) noexcept
+        // The fills seen from a light that keeps its direction while the camera orbits. Fitted to the subject (m_Center, m_Radius: the framing),
+        // or to the sphere the caller gives - the bones where they are this frame (a clip that walks or jumps away from its rest pose keeps its
+        // shadow). Opens its own render pass on the window: it must run before the frame's UI is rendered.
+        void RenderShadow(xgpu::window& Window, const xmath::fvec3* pFitCenter = nullptr, float FitRadius = 0.0f) noexcept
         {
+            const xmath::fvec3 Center = pFitCenter ? *pFitCenter : m_Center;
+            const float        Radius = pFitCenter ? FitRadius   : m_Radius;
             const float VerticalFov = m_LightView.getFov().m_Value;
             const float HFov        = 2.0f * std::atan(m_LightView.getAspect() * std::tan(VerticalFov * 0.5f));
-            const float Distance    = (m_Radius + 0.01f) / std::tan(std::min(VerticalFov, HFov) * 0.5f);
+            const float Distance    = (Radius + 0.01f) / std::tan(std::min(VerticalFov, HFov) * 0.5f);
             // The near plane stays a fraction of the distance: a fixed floor collapses the depth precision once the subject is bigger
             m_LightView.setNearZ(Distance * 0.1f);
-            m_LightView.setFarZ(Distance + m_Radius * 4.0f);
-            m_LightView.LookAt(Distance, xmath::radian3(-50_xdeg, 35_xdeg, 0_xdeg), m_Center);
+            m_LightView.setFarZ(Distance + Radius * 4.0f);
+            m_LightView.LookAt(Distance, xmath::radian3(-50_xdeg, 35_xdeg, 0_xdeg), Center);
             m_ShadowL2C = m_LightView.getW2C();
 
             if (!m_nFill) return;
