@@ -35,6 +35,7 @@ namespace xskeleton_editor
 
     struct skeleton_viewport
     {
+        bool                    m_bGizmoHot = false, m_bGizmoDrag = false;      // set by an editor that runs a transform gizmo over the view, before Render
         runtime                 m_Scene;                    // the skeleton editor's own scene (outline, fill, shadow); public: the editors wire the camera commands and toolbar to it, and set the subject's centre and radius
         const bool*             m_pOpen = nullptr;          // when set and false, the render callback draws nothing (the panel's window is closed)
 
@@ -73,9 +74,13 @@ namespace xskeleton_editor
             m_Min = Min; m_Size = Avail;
             m_bOver = ImGui::IsMouseHoveringRect(Min, ImVec2(Min.x + Avail.x, Min.y + Avail.y)) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
             ImGui::GetWindowDrawList()->AddRectFilled(Min, ImVec2(Min.x + Avail.x, Min.y + Avail.y), IM_COL32(115, 115, 115, 255));        // the depth tint fades toward this
-            ImGui::InvisibleButton("##SkeletonViewport", Avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
-            xeditor::PreviewGestures();
-            m_Scene.HandleInput();
+            if (m_bGizmoHot) ImGui::Dummy(Avail);          // a transform gizmo is hovered or dragged: it needs the hover (the keys and the camera still work; a drag keeps them out)
+            else ImGui::InvisibleButton("##SkeletonViewport", Avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+            if (!m_bGizmoDrag)
+            {
+                xeditor::PreviewGestures();
+                m_Scene.HandleInput();
+            }
             m_Scene.UpdateView(Min, Avail.x, Avail.y);
 
             m_Lines.clear(); m_Fills.clear();
