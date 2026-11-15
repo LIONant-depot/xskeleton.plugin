@@ -15,6 +15,7 @@
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_runtime.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_thumbnail.h"
 #include "plugins/xskeleton.plugin/source/xskeleton_descriptor.h"
+#include "plugins/xskeleton.plugin/source/xskeleton_joints.h"
 
 #include <charconv>
 #include <functional>
@@ -370,6 +371,75 @@ namespace xskeleton_editor
             xcmdline::parser::handle m_hBones, m_hAdd;
         };
 
+        // Joint limits (design v2, J1): the commands every joint edit goes through - the panel, the gizmos and the console alike. An edit
+        // (with its mirror and its review invalidation) is one undo step; a no-op leaves none; editing never marks a joint reviewed.
+        struct joint_cmd : xundo::query_command_base
+        {
+            enum class kind { info, set, reset, mirror, review, mode };
+            session& m_Session; kind m_Kind; const char* m_pHelp;
+            joint_cmd(xundo::system& System, session& Session, kind Kind, const char* pName, const char* pHelp) noexcept
+                : query_command_base(System, pName, nullptr), m_Session(Session), m_Kind(Kind), m_pHelp(pHelp) { RegisterArguments(); }
+            const char* getCommandHelp() const noexcept override { return m_pHelp; }
+            void RegisterArguments() noexcept override
+            {
+                switch (m_Kind)
+                {
+                case kind::info:   m_hBone = m_Parser.addOption("Bone", "One bone (its compiled name); default: every bone", false, 1); break;
+                case kind::mode:   m_hA = m_Parser.addOption("Mode", "On or Off", true, 1); break;
+                case kind::set:
+                    m_hBone = m_Parser.addOption("Bone",     "The bone (its compiled name)", true, 1);
+                    m_hA    = m_Parser.addOption("Geometry", "Free, Fixed, Hinge or Ball", false, 1);
+                    m_hB    = m_Parser.addOption("Hinge",    "\"min max\" degrees about the frame's z", false, 1);
+                    m_hC    = m_Parser.addOption("Swing",    "\"centre_y centre_z radius_y radius_z\" degrees", false, 1);
+                    m_hD    = m_Parser.addOption("Twist",    "\"centre half\" degrees", false, 1);
+                    m_hE    = m_Parser.addOption("Axes",     "\"swing_y swing_z twist\": each Free, Limited or Locked", false, 1);
+                    m_hF    = m_Parser.addOption("Frame",    "\"x y z w\" (the joint frame in the bone's frame) or Suggested", false, 1);
+                    m_hG    = m_Parser.addOption("Source",   "Custom (default), Fitted or Preset", false, 1);
+                    m_hMirror = m_Parser.addOption("Mirror", "1: the other side's bone gets the mirrored limit in the same step", false, 1);
+                    m_hForce  = m_Parser.addOption("Force",  "1: overwrite a reviewed other side that differs", false, 1);
+                    break;
+                case kind::reset:  m_hBone = m_Parser.addOption("Bone", "The bone", true, 1); m_hMirror = m_Parser.addOption("Mirror", "1: the other side too", false, 1); break;
+                case kind::mirror: m_hBone = m_Parser.addOption("Bone", "The bone whose limit goes to the other side", true, 1); m_hForce = m_Parser.addOption("Force", "1: overwrite a reviewed other side that differs", false, 1); break;
+                case kind::review: m_hBone = m_Parser.addOption("Bone", "The bone", true, 1); m_hMirror = m_Parser.addOption("Mirror", "1: the other side too", false, 1); break;
+                }
+            }
+            std::string Query() noexcept override { return m_Session.RunJoint(*this); }
+            xcmdline::parser::handle m_hBone, m_hA, m_hB, m_hC, m_hD, m_hE, m_hF, m_hG, m_hMirror, m_hForce;
+        };
+        joint_cmd                                               m_JointsInfo, m_JointSet, m_JointReset, m_JointMirror, m_JointReview, m_JointLimitsMode;
+
+        // The undo step every joint edit becomes: the joint section before and after, as text (xskeleton_joints::JointState)
+        struct joint_edit_cmd : xundo::command_base
+        {
+            session& m_Session;
+            joint_edit_cmd(xundo::system& System, session& Session) noexcept : command_base(System, "JointEdit", nullptr), m_Session(Session) { RegisterArguments(); }
+            const char* getCommandHelp() const noexcept override { return "Applies a joint limits edit (undoable; what the Joint* commands record). Usage: JointEdit -Label text -Before state -After state"; }
+            void RegisterArguments() noexcept override
+            {
+                m_hLabel  = m_Parser.addOption("Label",  "What the edit did", true, 1);
+                m_hBefore = m_Parser.addOption("Before", "Joint state before", true, 1);
+                m_hAfter  = m_Parser.addOption("After",  "Joint state after", true, 1);
+            }
+            std::string Redo() noexcept override
+            {
+                std::string After;
+                if (!xeditor::cmd_util::GetArg(m_Parser, m_hAfter, After)) return "JointEdit: bad arguments";
+                auto* pDesc = m_Session.Desc();
+                if (!pDesc) return "JointEdit: nothing loaded";
+                if (!xskeleton_joints::ApplyJointState(*pDesc, After)) return "JointEdit: unreadable state";
+                m_Session.m_Document.m_bDirty = true;
+                return {};
+            }
+            void BackupCurrenState(xundo::undo_file& File) noexcept override { std::string Before; xeditor::cmd_util::GetArg(m_Parser, m_hBefore, Before); xeditor::WriteString(File, Before); }
+            void Undo(xundo::undo_file& File) noexcept override
+            {
+                const std::string Before = xeditor::ReadString(File);
+                if (auto* pDesc = m_Session.Desc()) { xskeleton_joints::ApplyJointState(*pDesc, Before); m_Session.m_Document.m_bDirty = true; }
+            }
+            xcmdline::parser::handle m_hLabel, m_hBefore, m_hAfter;
+        };
+        joint_edit_cmd                                          m_JointEdit;
+
         xskeleton_desc::details                                 m_Details;              // the imported hierarchy, from the compiler's log
         set_bone_cmd                                            m_SetBone;
         match_lod_cmd                                           m_MatchLOD;
@@ -420,6 +490,13 @@ namespace xskeleton_editor
             , m_SelectBones    (m_Undo, *this, query_cmd::kind::select_bones,    "SelectBones",    "Selects bones in the view. Usage: SelectBones -Bones \"one raw name per line\" [-Add true]")
             , m_ClearSelection (m_Undo, *this, query_cmd::kind::clear_selection, "ClearSelection", "Selects no bone. Usage: ClearSelection")
             , m_ListLayers     (m_Undo, *this, query_cmd::kind::list_layers,     "ListLayers",     "The mask layers and how many bones each weights. Usage: ListLayers")
+            , m_JointsInfo     (m_Undo, *this, joint_cmd::kind::info,   "JointsInfo",  "Each bone's joint limit as it resolves now (override, preset or unspecified), in degrees, and whether limits are on. Usage: JointsInfo [-Bone name]")
+            , m_JointSet       (m_Undo, *this, joint_cmd::kind::set,    "JointSet",    "Sets a bone's joint limit (an override; starts from what it resolves to now). One undo step; a reviewed joint becomes 'needs review'. Usage: JointSet -Bone name [-Geometry Ball] [-Hinge \"min max\"] [-Swing \"cy cz ry rz\"] [-Twist \"centre half\"] [-Axes \"y z twist\"] [-Frame \"x y z w\"|Suggested] [-Source Custom] [-Mirror 1] [-Force 1]")
+            , m_JointReset     (m_Undo, *this, joint_cmd::kind::reset,  "JointReset",  "Removes a bone's override: it resolves from the profile again. Usage: JointReset -Bone name [-Mirror 1]")
+            , m_JointMirror    (m_Undo, *this, joint_cmd::kind::mirror, "JointMirror", "Gives the bone on the other side the mirror of this bone's limit (frame aware). Refuses to overwrite a reviewed other side that differs unless -Force 1. Usage: JointMirror -Bone name [-Force 1]")
+            , m_JointReview    (m_Undo, *this, joint_cmd::kind::review, "JointReview", "Marks a bone's limit reviewed (from the console: recorded as such). Usage: JointReview -Bone name [-Mirror 1]")
+            , m_JointLimitsMode(m_Undo, *this, joint_cmd::kind::mode,   "JointLimits", "Turns the skeleton's joint limits on or off (off: every joint free, as before). Usage: JointLimits -Mode On|Off")
+            , m_JointEdit      (m_Undo, *this)
         {
             m_SettingsInspector.BindObject(*xproperty::getObjectByType<view_settings>(), &m_Settings);
             m_bLastNormalize = m_Settings.m_bNormalizeSize;
@@ -633,6 +710,248 @@ namespace xskeleton_editor
             if (iBone != -1 && m_Selected.count(iBone) && m_Selected.size() > 1) { for (int i : m_Selected) Text += RawName(Skeleton, i) + "\n"; }
             else Text = Raw;
             return xeditor::Quote(Text);
+        }
+
+        //----------------------------------------------------------------------------------------
+        // Joint limits
+        //----------------------------------------------------------------------------------------
+
+        // the compiled skeleton as the joint resolution needs it: compiled names, parents, rest
+        bool JointRig(std::vector<std::string>& Names, std::vector<std::int32_t>& Parents, xanimation::pose& Rest) noexcept
+        {
+            auto* pSkeleton = Skeleton();
+            if (!pSkeleton) return false;
+            const auto Bones = pSkeleton->getBones(); const auto Rests = pSkeleton->getBoneRests();
+            const int N = int(Bones.size());
+            Names.resize(N); Parents.resize(N); Rest.resize(N);
+            for (int i = 0; i < N; ++i)
+            {
+                Names[i] = EffectiveName(*pSkeleton, i); Parents[i] = Bones[i].m_iParent;
+                Rest.m_Position[i] = Rests[i].m_RestPose.m_Position; Rest.m_Rotation[i] = Rests[i].m_RestPose.m_Rotation.NormalizeSafeCopy(); Rest.m_Scale[i] = Rests[i].m_RestPose.m_Scale;
+            }
+            return true;
+        }
+
+        std::string DescriptorSnapshot() noexcept
+        {
+            xproperty::settings::context C;
+            return xproperty::ui::undo::SnapshotToString(*m_Document.m_pDescriptor->getProperties(), m_Document.m_pDescriptor.get(), C);
+        }
+        void ApplyDescriptorSnapshot(const std::string& S) noexcept
+        {
+            xproperty::settings::context C;
+            xproperty::ui::undo::ApplySnapshotFromString(*m_Document.m_pDescriptor->getProperties(), m_Document.m_pDescriptor.get(), S, C);
+        }
+
+        // An edit of the joint overrides as ONE undo step: Edit changes the descriptor (or returns an error, and nothing changes); an edit
+        // that changes nothing leaves no undo entry. Review states follow the rule: a reviewed joint whose geometry changed needs review.
+        std::string CommitJointEdit(const std::string& Label, const std::function<std::string(desc&)>& Edit) noexcept
+        {
+            auto* pDesc = Desc();
+            if (!pDesc) return "nothing loaded";
+            const auto Before = xskeleton_joints::JointState(*pDesc);
+            if (auto Err = Edit(*pDesc); !Err.empty()) { xskeleton_joints::ApplyJointState(*pDesc, Before); return Err; }
+            for (auto& O : pDesc->m_JointOverrides)
+                if (O.m_Review != xskeleton_desc::joint_review::PENDING && !O.m_ReviewedHash.empty())
+                    O.m_Review = xskeleton_joints::ReviewHash(O) == O.m_ReviewedHash ? xskeleton_desc::joint_review::REVIEWED : xskeleton_desc::joint_review::NEEDS_REVIEW;
+            const auto After = xskeleton_joints::JointState(*pDesc);
+            if (After == Before) return "no change";
+            xskeleton_joints::ApplyJointState(*pDesc, Before);
+            if (auto Err = m_Undo.Execute(std::format("JointEdit -Label {} -Before {} -After {}", xeditor::Quote(Label), xeditor::Quote(Before), xeditor::Quote(After))); !Err.empty()) return Err;
+            m_Document.m_bDirty = true;
+            return {};
+        }
+
+        static std::vector<float> Floats(const std::string& S)
+        {
+            std::vector<float> V; std::size_t i = 0;
+            while (i < S.size())
+            {
+                while (i < S.size() && (S[i] == ' ' || S[i] == ',')) ++i;
+                if (i >= S.size()) break;
+                float f = 0; auto R = std::from_chars(S.data() + i, S.data() + S.size(), f);
+                if (R.ec != std::errc{}) return {};
+                V.push_back(f); i = std::size_t(R.ptr - S.data());
+            }
+            return V;
+        }
+        static bool AxisWord(std::string_view W, xskeleton_desc::joint_axis& A)
+        {
+            if (xstrtool::findI(W, "free") == 0) { A = xskeleton_desc::joint_axis::FREE; return true; }
+            if (xstrtool::findI(W, "lim") == 0)  { A = xskeleton_desc::joint_axis::LIMITED; return true; }
+            if (xstrtool::findI(W, "lock") == 0) { A = xskeleton_desc::joint_axis::LOCKED; return true; }
+            return false;
+        }
+
+        // the mirrored override of Src's limit for bone Dst (frame aware); empty when there is no mirror bone
+        std::string MirrorInto(desc& D, const xskeleton_joints::resolution& R, std::span<const std::string> Names, std::span<const std::int32_t> Parents, const xanimation::pose& Rest
+                              , int Src, bool bForce, std::string& Note)
+        {
+            std::vector<std::string_view> Views(Names.begin(), Names.end());
+            const int Dst = xanimation::FindMirrorBone(Views, Src);
+            if (Dst < 0 || Dst == Src) return std::format("'{}' has no bone on the other side (a centre bone, or an unknown name pattern)", Names[Src]);
+            const int N = int(Names.size());
+            std::vector<xmath::fquat> W(N);
+            for (int i = 0; i < N; ++i) W[i] = Parents[i] < 0 ? Rest.m_Rotation[i] : W[Parents[i]] * Rest.m_Rotation[i];
+            const float Fd = xanimation::MeasureFacingDeg(xanimation::skeleton_view{ Parents }, Views, Rest) * xskeleton_joints::deg_v;
+            const xmath::fvec3 Lateral(std::cos(Fd), 0, -std::sin(Fd));
+            xanimation::frame_confidence C;
+            const auto DstFrame = R.m_Limits[Dst].m_Type != xanimation::joint_type::FREE ? R.m_Limits[Dst].m_Frame : xanimation::SuggestFrame(Parents, Rest, Dst, C);
+            const auto DstLong = W[Dst] * (DstFrame * xmath::fvec3(1, 0, 0));
+            float Asym = 0;
+            const auto M = xanimation::Mirror(R.m_Limits[Src], W[Src], W[Dst], Rest.m_Rotation[Dst], Lateral, &DstLong, &Asym);
+            xskeleton_desc::joint_override O;
+            if (const auto* pOld = D.findJointOverride(Names[Dst])) O = *pOld;
+            O.m_BoneName = Names[Dst];
+            const bool bSameFrame = std::abs(xmath::fquat::Dot(M.m_Frame, DstFrame)) > std::cos(0.25f * xskeleton_joints::deg_v);
+            xskeleton_joints::SetOverrideFields(O, M, !bSameFrame);
+            if (const auto* pOld = D.findJointOverride(Names[Dst]); pOld && pOld->m_Review == xskeleton_desc::joint_review::REVIEWED && !bForce
+                && xskeleton_joints::ReviewHash(O) != pOld->m_ReviewedHash)
+                return std::format("'{}' is reviewed and differs from the mirror of '{}' (an asymmetric pair): -Force 1 overwrites it", Names[Dst], Names[Src]);
+            if (const auto* pSrcO = D.findJointOverride(Names[Src])) O.m_Source = pSrcO->m_Source;
+            O.m_Provenance = std::format("mirrored from {}", Names[Src]);
+            if (auto* pOld = D.findJointOverride(Names[Dst])) *pOld = O; else D.m_JointOverrides.push_back(O);
+            if (Asym > 5.0f * xskeleton_joints::deg_v) Note += std::format(" (the rest poses differ by {:.1f} degrees: check '{}')", Asym / xskeleton_joints::deg_v, Names[Dst]);
+            return {};
+        }
+
+        static const char* JointCmdName(joint_cmd::kind K) noexcept
+        {
+            switch (K) { case joint_cmd::kind::info: return "JointsInfo"; case joint_cmd::kind::set: return "JointSet"; case joint_cmd::kind::reset: return "JointReset";
+                         case joint_cmd::kind::mirror: return "JointMirror"; case joint_cmd::kind::review: return "JointReview"; default: return "JointLimits"; }
+        }
+
+        std::string RunJoint(joint_cmd& Cmd) noexcept
+        {
+            using namespace xeditor::cmd_util;
+            auto* pDesc = Desc();
+            if (!pDesc) return std::format("{}: nothing loaded", JointCmdName(Cmd.m_Kind));
+            std::vector<std::string> Names; std::vector<std::int32_t> Parents; xanimation::pose Rest;
+            if (Cmd.m_Kind != joint_cmd::kind::mode && !JointRig(Names, Parents, Rest)) return std::format("{}: no compiled skeleton (compile it first)", JointCmdName(Cmd.m_Kind));
+            auto R = xskeleton_joints::Resolve(*pDesc, Names, Parents, Rest);
+            std::string BoneName; GetArg(Cmd.m_Parser, Cmd.m_hBone, BoneName);
+            int iBone = -1;
+            for (int i = 0; i < int(Names.size()); ++i) if (Names[i] == BoneName) iBone = i;
+            if (!BoneName.empty() && iBone < 0) return std::format("{}: no bone '{}'", JointCmdName(Cmd.m_Kind), BoneName);
+            std::string MirrorArg, ForceArg; GetArg(Cmd.m_Parser, Cmd.m_hMirror, MirrorArg); GetArg(Cmd.m_Parser, Cmd.m_hForce, ForceArg);
+            const bool bMirror = MirrorArg == "1" || MirrorArg == "true", bForce = ForceArg == "1" || ForceArg == "true";
+
+            switch (Cmd.m_Kind)
+            {
+            case joint_cmd::kind::info:
+            {
+                std::string T = std::format("Joint limits {} (profile {}): {} overrides, {} preset ({} frames need confirmation), {} unspecified\n"
+                    , pDesc->m_JointLimits == xskeleton_desc::joint_limits_mode::ON ? "ON" : "OFF (a preview: compiled skeletons have no limits)"
+                    , pDesc->m_JointProfile == xskeleton_desc::joint_profile::HUMANOID_V1 ? xanimation::humanoid_v1_name_v : "none", R.m_nOverride, R.m_nPreset, R.m_nNeedFrame, R.m_nUnspecified);
+                for (int i = 0; i < int(Names.size()); ++i)
+                    if (iBone < 0 || i == iBone) T += std::format("{}: {} | {} | {}\n", i, Names[i], R.m_Source[i], xskeleton_joints::Describe(R.m_Limits[i]));
+                for (const auto& Wn : R.m_Warnings) T += "warning: " + Wn + "\n";
+                for (const auto& E : R.m_Errors) T += "error: " + E + "\n";
+                return T;
+            }
+            case joint_cmd::kind::mode:
+            {
+                std::string Mode; GetArg(Cmd.m_Parser, Cmd.m_hA, Mode);
+                const bool bOn = xstrtool::findI(Mode, "on") == 0;
+                if (!bOn && xstrtool::findI(Mode, "off") != 0) return "JointLimits: -Mode On or Off";
+                const auto Err = CommitJointEdit(bOn ? "Joint limits on" : "Joint limits off", [&](desc& D) { D.m_JointLimits = bOn ? xskeleton_desc::joint_limits_mode::ON : xskeleton_desc::joint_limits_mode::OFF; return std::string{}; });
+                return Err.empty() ? std::format("JointLimits: {} (compile to apply)", bOn ? "on" : "off") : "JointLimits: " + Err;
+            }
+            case joint_cmd::kind::set:
+            {
+                std::string Geo, Hinge, Swing, Twist, Axes, Frame, Source;
+                GetArg(Cmd.m_Parser, Cmd.m_hA, Geo); GetArg(Cmd.m_Parser, Cmd.m_hB, Hinge); GetArg(Cmd.m_Parser, Cmd.m_hC, Swing); GetArg(Cmd.m_Parser, Cmd.m_hD, Twist);
+                GetArg(Cmd.m_Parser, Cmd.m_hE, Axes); GetArg(Cmd.m_Parser, Cmd.m_hF, Frame); GetArg(Cmd.m_Parser, Cmd.m_hG, Source);
+                std::string Note;
+                const auto Err = CommitJointEdit(std::format("Joint limit {}", BoneName), [&](desc& D) -> std::string
+                {
+                    xskeleton_desc::joint_override O;
+                    if (const auto* pOld = D.findJointOverride(BoneName)) O = *pOld;
+                    else { O.m_BoneName = BoneName; xskeleton_joints::SetOverrideFields(O, R.m_Limits[iBone], false); if (O.m_Geometry == xskeleton_desc::joint_geometry::FREE && Geo.empty()) O.m_Geometry = xskeleton_desc::joint_geometry::BALL;
+                           if (R.m_Limits[iBone].m_Type == xanimation::joint_type::FREE) { O.m_SwingRadius = { 45, 45 }; O.m_TwistHalf = 45; } }
+                    if (!Geo.empty())
+                    {
+                        if (xstrtool::findI(Geo, "free") == 0) O.m_Geometry = xskeleton_desc::joint_geometry::FREE;
+                        else if (xstrtool::findI(Geo, "fixed") == 0) O.m_Geometry = xskeleton_desc::joint_geometry::FIXED;
+                        else if (xstrtool::findI(Geo, "hinge") == 0) O.m_Geometry = xskeleton_desc::joint_geometry::HINGE;
+                        else if (xstrtool::findI(Geo, "ball") == 0) O.m_Geometry = xskeleton_desc::joint_geometry::BALL;
+                        else return std::format("-Geometry '{}': Free, Fixed, Hinge or Ball", Geo);
+                    }
+                    if (!Hinge.empty()) { auto V = Floats(Hinge); if (V.size() != 2) return "-Hinge: \"min max\""; O.m_HingeMin = V[0]; O.m_HingeMax = V[1]; }
+                    if (!Swing.empty()) { auto V = Floats(Swing); if (V.size() != 4) return "-Swing: \"centre_y centre_z radius_y radius_z\""; O.m_SwingCentre = { V[0], V[1] }; O.m_SwingRadius = { V[2], V[3] }; }
+                    if (!Twist.empty()) { auto V = Floats(Twist); if (V.size() != 2) return "-Twist: \"centre half\""; O.m_TwistCentre = V[0]; O.m_TwistHalf = V[1]; }
+                    if (!Axes.empty())
+                    {
+                        std::vector<std::string> Words; { std::string W; for (char c : Axes + " ") { if (c == ' ' || c == ',') { if (!W.empty()) Words.push_back(W); W.clear(); } else W += c; } }
+                        if (Words.size() != 3 || !AxisWord(Words[0], O.m_SwingY) || !AxisWord(Words[1], O.m_SwingZ) || !AxisWord(Words[2], O.m_Twist)) return "-Axes: \"swing_y swing_z twist\", each Free, Limited or Locked";
+                    }
+                    if (!Frame.empty())
+                    {
+                        if (xstrtool::findI(Frame, "sugg") == 0) O.m_bFrameSet = false;
+                        else { auto V = Floats(Frame); if (V.size() != 4) return "-Frame: \"x y z w\" or Suggested"; O.m_bFrameSet = true; O.m_Frame = xmath::fquat(V[0], V[1], V[2], V[3]).NormalizeSafeCopy(); }
+                    }
+                    if (!Source.empty()) O.m_Source = xstrtool::findI(Source, "fit") == 0 ? xskeleton_desc::joint_source::FITTED : xstrtool::findI(Source, "pre") == 0 ? xskeleton_desc::joint_source::PRESET : xskeleton_desc::joint_source::CUSTOM;
+                    // validated before it is accepted (atomic: a bad field changes nothing)
+                    if (const char* pBad = xanimation::Validate(xskeleton_joints::LimitFromOverride(O, Rest.m_Rotation[iBone], R.m_Limits[iBone].m_Frame)); pBad) return pBad;
+                    if (auto* pOld = D.findJointOverride(BoneName)) *pOld = O; else D.m_JointOverrides.push_back(O);
+                    if (bMirror)
+                    {
+                        const auto R2 = xskeleton_joints::Resolve(D, Names, Parents, Rest);
+                        if (auto E = MirrorInto(D, R2, Names, Parents, Rest, iBone, bForce, Note); !E.empty()) return E;
+                    }
+                    return {};
+                });
+                if (!Err.empty()) return std::format("JointSet: {}", Err);
+                const auto R3 = xskeleton_joints::Resolve(*pDesc, Names, Parents, Rest);
+                return std::format("JointSet: {} = {}{}", BoneName, xskeleton_joints::Describe(R3.m_Limits[iBone]), Note);
+            }
+            case joint_cmd::kind::reset:
+            {
+                std::vector<std::string_view> Views(Names.begin(), Names.end());
+                const int Other = bMirror ? xanimation::FindMirrorBone(Views, iBone) : -1;
+                const auto Err = CommitJointEdit(std::format("Joint limit reset {}", BoneName), [&](desc& D) -> std::string
+                {
+                    auto& V = D.m_JointOverrides;
+                    V.erase(std::remove_if(V.begin(), V.end(), [&](const auto& O) { return O.m_BoneName == BoneName || (Other >= 0 && O.m_BoneName == Names[Other]); }), V.end());
+                    return {};
+                });
+                if (!Err.empty()) return std::format("JointReset: {}", Err);
+                const auto R3 = xskeleton_joints::Resolve(*pDesc, Names, Parents, Rest);
+                return std::format("JointReset: {} = {} ({})", BoneName, xskeleton_joints::Describe(R3.m_Limits[iBone]), R3.m_Source[iBone]);
+            }
+            case joint_cmd::kind::mirror:
+            {
+                std::string Note;
+                const auto Err = CommitJointEdit(std::format("Joint limit mirror {}", BoneName), [&](desc& D) { return MirrorInto(D, R, Names, Parents, Rest, iBone, bForce, Note); });
+                return Err.empty() ? std::format("JointMirror: {} mirrored to the other side{}", BoneName, Note) : std::format("JointMirror: {}", Err);
+            }
+            case joint_cmd::kind::review:
+            {
+                std::vector<std::string_view> Views(Names.begin(), Names.end());
+                const int Other = bMirror ? xanimation::FindMirrorBone(Views, iBone) : -1;
+                const auto Err = CommitJointEdit(std::format("Joint limit reviewed {}", BoneName), [&](desc& D) -> std::string
+                {
+                    for (int b : { iBone, Other })
+                    {
+                        if (b < 0) continue;
+                        xskeleton_desc::joint_override* pO = D.findJointOverride(Names[b]);
+                        if (!pO)    // reviewing a preset joint keeps what was reviewed: its values are copied in
+                        {
+                            xskeleton_desc::joint_override O; O.m_BoneName = Names[b]; O.m_Source = xskeleton_desc::joint_source::PRESET;
+                            xskeleton_joints::SetOverrideFields(O, R.m_Limits[b], false);
+                            O.m_Provenance = std::format("{} ({})", xanimation::humanoid_v1_name_v, R.m_Source[b]);
+                            D.m_JointOverrides.push_back(O); pO = &D.m_JointOverrides.back();
+                        }
+                        pO->m_Review = xskeleton_desc::joint_review::REVIEWED;
+                        pO->m_ReviewedHash = xskeleton_joints::ReviewHash(*pO);
+                        if (pO->m_Provenance.find("reviewed from the console") == std::string::npos) pO->m_Provenance += pO->m_Provenance.empty() ? "reviewed from the console" : "; reviewed from the console";
+                    }
+                    return {};
+                });
+                return Err.empty() ? std::format("JointReview: {}{} reviewed", BoneName, Other >= 0 ? " and " + Names[Other] : "") : std::format("JointReview: {}", Err);
+            }
+            }
+            return {};
         }
 
         std::string RunQuery(query_cmd& Cmd) noexcept

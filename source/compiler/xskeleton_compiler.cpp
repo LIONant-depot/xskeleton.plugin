@@ -10,6 +10,7 @@
 #include "../xskeleton_details.h"
 #include "../xskeleton_bone_manifest.h"
 #include "xskeleton_merge.h"
+#include "../xskeleton_joints.h"
 
 #include "dependencies/xproperty/source/xcore/my_properties.cpp"
 #include "dependencies/xmath/source/bridge/xmath_to_xproperty.h"
@@ -217,6 +218,53 @@ namespace xskeleton_compiler
 
             BuildMasks(Bones, NameToIndex);
 
+            if (auto Err = BuildJoints(Bones); Err) return Err;
+
+            return {};
+        }
+
+        //--------------------------------------------------------------------------------------
+        // The joint limits (Off: no array, every joint free as before). A readable report next to the log: JointLimits.txt.
+        xerr BuildJoints(const std::vector<merged_bone>& Bones)
+        {
+            if (m_Descriptor.m_JointLimits != xskeleton_desc::joint_limits_mode::ON)
+            {
+                if (!m_Descriptor.m_JointOverrides.empty())
+                    LogMessage(xresource_pipeline::msg_type::INFO, std::format("Joint limits are off: {} joint overrides kept in the descriptor, not compiled", m_Descriptor.m_JointOverrides.size()));
+                return {};
+            }
+            const int N = static_cast<int>(Bones.size());
+            std::vector<std::string> Names(N); std::vector<std::int32_t> Parents(N); xanimation::pose Rest; Rest.resize(N);
+            for (int i = 0; i < N; ++i)
+            {
+                Names[i] = Bones[i].m_Name; Parents[i] = Bones[i].m_iParent;
+                Rest.m_Position[i] = Bones[i].m_BindTranslation; Rest.m_Rotation[i] = Bones[i].m_BindRotation.NormalizeSafeCopy(); Rest.m_Scale[i] = Bones[i].m_BindScale;
+            }
+            const auto R = xskeleton_joints::Resolve(m_Descriptor, Names, Parents, Rest);
+            for (const auto& W : R.m_Warnings) LogMessage(xresource_pipeline::msg_type::WARNING, W);
+            if (!R.m_Errors.empty())
+            {
+                for (const auto& E : R.m_Errors) LogMessage(xresource_pipeline::msg_type::ERROR, E);
+                return xerr::create_f<state, "Malformed joint override">();
+            }
+            m_FinalSkeleton.m_nJoints = static_cast<std::uint16_t>(N);
+            m_FinalSkeleton.m_pJoints = new xskeleton::skeleton::joint[N];
+            for (int i = 0; i < N; ++i) m_FinalSkeleton.m_pJoints[i] = xskeleton_joints::ToRuntime(R.m_Limits[i]);
+            LogMessage(xresource_pipeline::msg_type::INFO, std::format("Joint limits on ({}): {} from overrides, {} from the preset ({} frames need confirmation), {} unspecified (free)"
+                , m_Descriptor.m_JointProfile == xskeleton_desc::joint_profile::HUMANOID_V1 ? xanimation::humanoid_v1_name_v : "no profile", R.m_nOverride, R.m_nPreset, R.m_nNeedFrame, R.m_nUnspecified));
+
+            constexpr float D = 180.0f / 3.14159265f;
+            std::string Txt = "# Joint limits as compiled (degrees). Ball: swing centre/radius (y, z), twist centre +- half. Hinge: min..max about the frame's z.\n# bone\tsource\tgeometry\tlimits\n";
+            static constexpr const char* Types[] = { "free", "fixed", "hinge", "ball" };
+            for (int i = 0; i < N; ++i)
+            {
+                const auto& L = R.m_Limits[i];
+                std::string Lim;
+                if (L.m_Type == xanimation::joint_type::HINGE) Lim = std::format("{:.1f}..{:.1f}", L.m_HingeMin * D, L.m_HingeMax * D);
+                if (L.m_Type == xanimation::joint_type::BALL)  Lim = std::format("swing {:.1f},{:.1f} r {:.1f},{:.1f}  twist {:.1f} +- {:.1f}", L.m_SwingCy * D, L.m_SwingCz * D, L.m_SwingRy * D, L.m_SwingRz * D, L.m_TwistCentre * D, L.m_TwistHalf * D);
+                Txt += std::format("{}\t{}\t{}\t{}\n", Names[i], R.m_Source[i], Types[static_cast<int>(L.m_Type)], Lim);
+            }
+            if (std::FILE* f = _wfopen(std::format(L"{}\\JointLimits.txt", m_ResourceLogPath).c_str(), L"wb")) { std::fwrite(Txt.data(), 1, Txt.size(), f); std::fclose(f); }
             return {};
         }
 
@@ -586,6 +634,79 @@ namespace xskeleton_compiler
             Check(Text.find("Rotation:fff") == std::string::npos && Text.find("RootBone/Transform") == std::string::npos, "a saved descriptor has no bone Transform");
             xskeleton_desc::descriptor E;
             Check(!E.Serialize(true, New.wstring(), C) && E.m_RootBone.m_Bones.size() == 1 && E.m_RootBone.m_Bones[0].m_Rename == "Kid", "a saved descriptor loads again");
+            std::filesystem::remove_all(Dir, Ec);
+        }
+
+        // Joint limits (J1): an old descriptor loads with limits off; the fields round-trip; resolution: preset, override, a name no bone has
+        // (warning), a malformed override (error), deterministic; the runtime array round-trips through the serializer
+        {
+            const auto Dir = std::filesystem::temp_directory_path() / L"xskeleton_selftest_joints";
+            std::error_code Ec;
+            std::filesystem::create_directories(Dir, Ec);
+            xproperty::settings::context C;
+            {
+                xskeleton_desc::descriptor D;
+                Check(D.m_JointLimits == xskeleton_desc::joint_limits_mode::OFF && D.m_JointProfile == xskeleton_desc::joint_profile::HUMANOID_V1, "[JL-002] limits are off by default (an old descriptor stays as it was)");
+                D.m_JointLimits = xskeleton_desc::joint_limits_mode::ON;
+                auto& O = D.m_JointOverrides.emplace_back();
+                O.m_BoneName = "mixamorig:LeftLeg"; O.m_Geometry = xskeleton_desc::joint_geometry::HINGE; O.m_HingeMin = -2; O.m_HingeMax = 120; O.m_Review = xskeleton_desc::joint_review::REVIEWED; O.m_Provenance = "selftest";
+                O.m_SwingRadius = { 12.5f, 33.0f }; O.m_SwingZ = xskeleton_desc::joint_axis::LOCKED;
+                Check(!D.Serialize(false, (Dir / L"j.txt").wstring(), C), "a descriptor with joint limits saves");
+                xskeleton_desc::descriptor E;
+                Check(!E.Serialize(true, (Dir / L"j.txt").wstring(), C), "and loads");
+                Check(E.m_JointLimits == xskeleton_desc::joint_limits_mode::ON && E.m_JointOverrides.size() == 1, "the mode and the override come back");
+                if (E.m_JointOverrides.size() == 1)
+                {
+                    const auto& P = E.m_JointOverrides[0];
+                    Check(P.m_BoneName == O.m_BoneName && P.m_Geometry == O.m_Geometry && P.m_HingeMin == O.m_HingeMin && P.m_HingeMax == O.m_HingeMax && P.m_Review == O.m_Review
+                          && P.m_SwingRadius.m_X == 12.5f && P.m_SwingRadius.m_Y == 33.0f && P.m_SwingZ == xskeleton_desc::joint_axis::LOCKED && P.m_Provenance == "selftest", "every override field comes back");
+                }
+            }
+            // a small Mixamo-named rig, T-pose, facing +Z
+            std::vector<std::string> Names; std::vector<std::int32_t> Parents; xanimation::pose Rest;
+            auto Add = [&](const char* N, int P, xmath::fvec3 T) { Names.push_back(N); Parents.push_back(P); Rest.m_Position.push_back(T); Rest.m_Rotation.push_back(xmath::fquat::fromIdentity()); Rest.m_Scale.push_back(xmath::fvec3(1, 1, 1)); return int(Names.size()) - 1; };
+            const int Hips = Add("mixamorig:Hips", -1, { 0, 1, 0 });
+            const int Spine = Add("mixamorig:Spine", Hips, { 0, 0.2f, 0 }); const int Neck = Add("mixamorig:Neck", Spine, { 0, 0.4f, 0 }); Add("mixamorig:Head", Neck, { 0, 0.1f, 0 });
+            const int Up = Add("mixamorig:LeftUpLeg", Hips, { 0.1f, -0.05f, 0 }); const int Leg = Add("mixamorig:LeftLeg", Up, { 0, -0.45f, 0 });
+            const int Foot = Add("mixamorig:LeftFoot", Leg, { 0, -0.45f, 0 }); Add("mixamorig:LeftToeBase", Foot, { 0, -0.05f, 0.12f });
+            Add("Helper_Prop", Hips, { 0, 0, 0.3f });
+            xskeleton_desc::descriptor D; D.m_JointLimits = xskeleton_desc::joint_limits_mode::ON;
+            auto R = xskeleton_joints::Resolve(D, Names, Parents, Rest);
+            Check(R.m_Limits[Leg].m_Type == xanimation::joint_type::HINGE && R.m_Source[Leg].starts_with("preset"), "the knee resolves to the preset hinge");
+            Check(R.m_Limits[Hips].m_Type == xanimation::joint_type::FREE && R.m_Limits[8].m_Type == xanimation::joint_type::FREE && R.m_Source[8] == "unspecified", "[JL-012] hips free; an unknown bone unspecified");
+            auto& O = D.m_JointOverrides.emplace_back(); O.m_BoneName = "mixamorig:LeftLeg"; O.m_Geometry = xskeleton_desc::joint_geometry::HINGE; O.m_HingeMin = 0; O.m_HingeMax = 100;
+            auto& Bad = D.m_JointOverrides.emplace_back(); Bad.m_BoneName = "NoSuchBone";
+            R = xskeleton_joints::Resolve(D, Names, Parents, Rest);
+            Check(R.m_Source[Leg].starts_with("override") && std::abs(R.m_Limits[Leg].m_HingeMax - 100.0f * 3.14159265f / 180.0f) < 1e-5f, "an override replaces the preset");
+            Check(R.m_Warnings.size() == 1 && R.m_Errors.empty(), "an override naming no bone is a warning, not attached elsewhere");
+            const auto R2 = xskeleton_joints::Resolve(D, Names, Parents, Rest);
+            bool Same = true; for (std::size_t i = 0; i < Names.size(); ++i) Same = Same && R.m_Limits[i].m_Type == R2.m_Limits[i].m_Type && R.m_Limits[i].m_HingeMax == R2.m_Limits[i].m_HingeMax && R.m_Limits[i].m_SwingRy == R2.m_Limits[i].m_SwingRy && R.m_Limits[i].m_Frame.m_W == R2.m_Limits[i].m_Frame.m_W;
+            Check(Same, "[JL-061] resolution is deterministic (descriptor + skeleton only)");
+            D.m_JointOverrides.back().m_BoneName = "mixamorig:LeftUpLeg"; D.m_JointOverrides.back().m_Geometry = xskeleton_desc::joint_geometry::HINGE; D.m_JointOverrides.back().m_HingeMin = 10; D.m_JointOverrides.back().m_HingeMax = -10;
+            R = xskeleton_joints::Resolve(D, Names, Parents, Rest);
+            Check(R.m_Errors.size() == 1 && R.m_Errors[0].find("min above max") != std::string::npos, "[JL-023] a malformed override is an error naming the field");
+
+            // the runtime joint array round-trips through the serializer (and a skeleton without one loads with none)
+            for (const bool bWith : { true, false })
+            {
+                xskeleton::skeleton S; S.Initialize();
+                S.m_nBones = 2; S.m_pBones = new xskeleton::skeleton::bone[2]; S.m_pBoneNames = new xskeleton::skeleton::name[2]; S.m_pBoneRests = new xskeleton::skeleton::rest[2];
+                S.m_pBones[1].m_iParent = 0; S.m_nLODs = 1; S.m_pLODBoneCount = new std::uint16_t[1]{ 2 };
+                if (bWith) { S.m_nJoints = 2; S.m_pJoints = new xskeleton::skeleton::joint[2]; S.m_pJoints[1] = xskeleton_joints::ToRuntime(R2.m_Limits[Leg]); }
+                const auto File = (Dir / (bWith ? L"with.bin" : L"without.bin")).wstring();
+                xserializer::stream W;
+                const bool Saved = !W.Save(File, S, xserializer::compression_level::FAST);
+                S.Kill();
+                xserializer::stream Rd; xskeleton::skeleton* pS = nullptr;
+                const bool Loaded = Saved && !Rd.Load(File, pS) && pS;
+                Check(Loaded, bWith ? "a skeleton with joints saves and loads" : "a skeleton without joints saves and loads");
+                if (Loaded)
+                {
+                    if (bWith) Check(pS->m_nJoints == 2 && pS->m_pJoints[1].m_Type == 2 && pS->m_pJoints[1].m_HingeMax == xskeleton_joints::ToRuntime(R2.m_Limits[Leg]).m_HingeMax && pS->m_pJoints[1].m_Frame[3] == xskeleton_joints::ToRuntime(R2.m_Limits[Leg]).m_Frame[3], "the joint array comes back field for field");
+                    else Check(pS->m_nJoints == 0 && pS->getJoints().empty(), "[JL-001] no array: every joint free");
+                    xserializer::default_memory_handler_v.Free(xserializer::mem_type{ .m_bUnique = true }, pS);     // one block: the arrays live inside it
+                }
+            }
             std::filesystem::remove_all(Dir, Ec);
         }
 

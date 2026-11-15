@@ -148,6 +148,87 @@ namespace xskeleton_desc
     };
     XPROPERTY_REG(mask_group)
 
+    //--------------------------------------------------------------------------------------
+    // Joint limits (xLION_Docs animation_skeleton_joints_design_v2): the skeleton owns ONE accepted limit model. Off by default: a skeleton
+    // without limits behaves as before (every joint free) until someone turns them on. On: every bone resolves from its override, else
+    // the pinned profile (through the bone mapping), else Unspecified (free). Angles in degrees here, radians compiled.
+    enum class joint_limits_mode : std::uint8_t { OFF, ON };
+    static constexpr auto joint_limits_mode_v = std::array
+    { xproperty::settings::enum_item("Off", joint_limits_mode::OFF)
+    , xproperty::settings::enum_item("On",  joint_limits_mode::ON)
+    };
+    enum class joint_profile : std::uint8_t { NONE, HUMANOID_V1 };
+    static constexpr auto joint_profile_v = std::array
+    { xproperty::settings::enum_item("None",        joint_profile::NONE)
+    , xproperty::settings::enum_item("Humanoid v1", joint_profile::HUMANOID_V1)
+    };
+    enum class joint_geometry : std::uint8_t { FREE, FIXED, HINGE, BALL };
+    static constexpr auto joint_geometry_v = std::array
+    { xproperty::settings::enum_item("Free",  joint_geometry::FREE)
+    , xproperty::settings::enum_item("Fixed", joint_geometry::FIXED)
+    , xproperty::settings::enum_item("Hinge", joint_geometry::HINGE)
+    , xproperty::settings::enum_item("Ball",  joint_geometry::BALL)
+    };
+    enum class joint_axis : std::uint8_t { FREE, LIMITED, LOCKED };
+    static constexpr auto joint_axis_v = std::array
+    { xproperty::settings::enum_item("Free",    joint_axis::FREE)
+    , xproperty::settings::enum_item("Limited", joint_axis::LIMITED)
+    , xproperty::settings::enum_item("Locked",  joint_axis::LOCKED)
+    };
+    enum class joint_source : std::uint8_t { CUSTOM, FITTED, PRESET };
+    static constexpr auto joint_source_v = std::array
+    { xproperty::settings::enum_item("Custom", joint_source::CUSTOM)
+    , xproperty::settings::enum_item("Fitted", joint_source::FITTED)
+    , xproperty::settings::enum_item("Preset", joint_source::PRESET)      // a preset value copied in on purpose (then edited or not)
+    };
+    enum class joint_review : std::uint8_t { PENDING, REVIEWED, NEEDS_REVIEW };
+    static constexpr auto joint_review_v = std::array
+    { xproperty::settings::enum_item("Pending",      joint_review::PENDING)
+    , xproperty::settings::enum_item("Reviewed",     joint_review::REVIEWED)
+    , xproperty::settings::enum_item("Needs review", joint_review::NEEDS_REVIEW)
+    };
+
+    // One bone's override (absent: the bone resolves from the profile). Matched by the bone's compiled name; an override that names no
+    // bone is a compile warning, never attached to another bone.
+    struct joint_override
+    {
+        std::string     m_BoneName      = {};
+        joint_source    m_Source        = joint_source::CUSTOM;
+        joint_geometry  m_Geometry      = joint_geometry::BALL;
+        bool            m_bFrameSet     = false;                          // false: the suggested frame
+        xmath::fquat    m_Frame         = xmath::fquat::fromIdentity();   // the joint frame in the bone's frame (x the long axis, z the hinge axis)
+        float           m_HingeMin      = 0, m_HingeMax = 0;              // degrees
+        joint_axis      m_SwingY        = joint_axis::LIMITED, m_SwingZ = joint_axis::LIMITED, m_Twist = joint_axis::LIMITED;
+        xmath::fvec2    m_SwingCentre   = { 0, 0 };                       // degrees (y, z)
+        xmath::fvec2    m_SwingRadius   = { 45, 45 };                     // degrees (y, z)
+        float           m_TwistCentre   = 0, m_TwistHalf = 45;            // degrees
+        joint_review    m_Review        = joint_review::PENDING;
+        std::string     m_ReviewedHash  = {};                             // the hash of the fields reviewed: a later change invalidates the review
+        std::string     m_Provenance    = {};                             // where the values came from (a preset, the clips analyzed, a mirror)
+
+        XPROPERTY_DEF
+        ( "JointOverride", joint_override
+        , obj_member<"BoneName",     &joint_override::m_BoneName >
+        , obj_member<"Source",       &joint_override::m_Source,   member_enum_span<joint_source_v> >
+        , obj_member<"Geometry",     &joint_override::m_Geometry, member_enum_span<joint_geometry_v> >
+        , obj_member<"FrameSet",     &joint_override::m_bFrameSet >
+        , obj_member<"Frame",        &joint_override::m_Frame >
+        , obj_member<"HingeMin",     &joint_override::m_HingeMin >
+        , obj_member<"HingeMax",     &joint_override::m_HingeMax >
+        , obj_member<"SwingY",       &joint_override::m_SwingY,   member_enum_span<joint_axis_v> >
+        , obj_member<"SwingZ",       &joint_override::m_SwingZ,   member_enum_span<joint_axis_v> >
+        , obj_member<"Twist",        &joint_override::m_Twist,    member_enum_span<joint_axis_v> >
+        , obj_member<"SwingCentre",  &joint_override::m_SwingCentre >
+        , obj_member<"SwingRadius",  &joint_override::m_SwingRadius >
+        , obj_member<"TwistCentre",  &joint_override::m_TwistCentre >
+        , obj_member<"TwistHalf",    &joint_override::m_TwistHalf >
+        , obj_member<"Review",       &joint_override::m_Review,   member_enum_span<joint_review_v> >
+        , obj_member<"ReviewedHash", &joint_override::m_ReviewedHash, member_flags<flags::SHOW_READONLY> >
+        , obj_member<"Provenance",   &joint_override::m_Provenance >
+        )
+    };
+    XPROPERTY_REG(joint_override)
+
     struct descriptor : xresource_pipeline::descriptor::base
     {
         using parent = xresource_pipeline::descriptor::base;
@@ -237,6 +318,11 @@ namespace xskeleton_desc
         bone                         m_RootBone      = {};    // A skeleton has exactly one root (matches the existing runtime convention: bone 0 is always the sole root) - reached through this field rather than through someone else's m_Bones, but otherwise an ordinary `bone`, same shape as any other.
         std::vector<mask_group>     m_MaskGroups    = {};
         bool                        m_bCompactTree  = false;  // the bone tree is too deep for xproperty's paths: RootBone is empty in the properties, the tree follows as the "BoneOverrides" table
+        joint_limits_mode           m_JointLimits   = joint_limits_mode::OFF;       // Off: every joint free, as before (existing skeletons stay off until turned on)
+        joint_profile               m_JointProfile  = joint_profile::HUMANOID_V1;   // pinned by version: a newer preset never changes this skeleton by itself
+        std::vector<joint_override> m_JointOverrides = {};
+
+        joint_override* findJointOverride(std::string_view Bone) noexcept { for (auto& J : m_JointOverrides) if (J.m_BoneName == Bone) return &J; return nullptr; }
 
         static int Depth(const bone& B) noexcept
         {
@@ -340,6 +426,9 @@ namespace xskeleton_desc
         , obj_member<"RootBone",        &descriptor::m_RootBone >
         , obj_member<"MaskGroups",      &descriptor::m_MaskGroups >
         , obj_member<"CompactTree",     &descriptor::m_bCompactTree, member_flags<flags::DONT_SHOW> >
+        , obj_member<"JointLimits",     &descriptor::m_JointLimits,  member_enum_span<joint_limits_mode_v>, member_help<"Off: every joint is free (as before). On: each joint has a limit - its override, else the profile's (through the bone names), else unspecified (free). Read by posing, runtime IK, validation, the nervous system and physics.">>
+        , obj_member<"JointProfile",    &descriptor::m_JointProfile, member_enum_span<joint_profile_v>, member_help<"The preset the joints without an override take, pinned by version.">>
+        , obj_member<"JointOverrides",  &descriptor::m_JointOverrides >
         )
     };
     XPROPERTY_VREG(descriptor)

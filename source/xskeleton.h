@@ -89,7 +89,7 @@ namespace xskeleton
 
     struct skeleton
     {
-        inline static constexpr auto xserializer_version_v = 1;
+        inline static constexpr auto xserializer_version_v = 2;     // 2: the joint array (limits)
 
         // Hot: read every frame, for every bone, while walking the hierarchy and building skin matrices.
         // Fields ordered by alignment (largest/most-aligned first) to keep this struct - and the cache
@@ -132,6 +132,21 @@ namespace xskeleton
             std::uint32_t    m_NameHash  {};
         };
 
+        // Cold, parallel to bone[] when present: the bone's rotational limit relative to its parent (joint limits design v2; the evaluator
+        // is xanimation::joint_limit - this is its stored form, the rest rotation comes from rest[]). Radians. Absent array: every joint
+        // free (skeletons without limits behave as before). Read by runtime IK, validation, the nervous system and the physics converter.
+        struct joint
+        {
+            std::uint8_t     m_Type          {};     // 0 free, 1 fixed, 2 hinge, 3 ball (xanimation::joint_type)
+            std::uint8_t     m_SwingY        {};     // 0 free, 1 limited, 2 locked (xanimation::axis_motion)
+            std::uint8_t     m_SwingZ        {};
+            std::uint8_t     m_Twist         {};
+            float            m_Frame[4]      {0, 0, 0, 1};    // the joint frame in the bone's frame (x y z w): x the long axis, z the hinge axis
+            float            m_HingeMin      {}, m_HingeMax {};
+            float            m_SwingCy       {}, m_SwingCz {}, m_SwingRy {}, m_SwingRz {};
+            float            m_TwistCentre   {}, m_TwistHalf {};
+        };
+
         //-------------------------------------------------------------------------
 
                                                 skeleton                (void)                                  noexcept = default;
@@ -146,6 +161,7 @@ namespace xskeleton
         inline std::span<std::uint16_t>         getLODBoneCounts        (void)                           const   noexcept { return { m_pLODBoneCount, m_nLODs }; }
         inline std::span<mask_group>            getMaskGroups           (void)                           const   noexcept { return { m_pMaskGroups, m_nMaskGroups }; }
         inline std::span<mask>                  getMaskWeights          (int iGroup)                     const   noexcept { return { m_pMasks + static_cast<std::size_t>(iGroup) * m_nBones, m_nBones }; }
+        inline std::span<joint>                 getJoints               (void)                           const   noexcept { return { m_pJoints, m_nJoints }; }     // empty: no limits
 
         bone*                m_pBones            {nullptr};   // m_nBones entries. Hot - see bone's own comment.
         name*                m_pBoneNames        {nullptr};   // m_nBones entries, parallel to m_pBones.
@@ -153,9 +169,11 @@ namespace xskeleton
         std::uint16_t*       m_pLODBoneCount     {nullptr};   // m_nLODs entries; LOD L uses bones [0, m_pLODBoneCount[L])
         mask_group*          m_pMaskGroups       {nullptr};   // m_nMaskGroups entries
         mask*                m_pMasks            {nullptr};   // m_nMaskGroups * m_nBones entries; group g's weights are m_pMasks[g*m_nBones .. (g+1)*m_nBones)
+        joint*               m_pJoints           {nullptr};   // m_nJoints entries: 0 (limits off) or m_nBones
         std::uint16_t         m_nBones            {0};
         std::uint16_t         m_nLODs             {0};
         std::uint16_t         m_nMaskGroups       {0};
+        std::uint16_t         m_nJoints           {0};
     };
 
     //-------------------------------------------------------------------------
@@ -182,6 +200,7 @@ namespace xskeleton
         if (m_pLODBoneCount)    delete[] m_pLODBoneCount;
         if (m_pMaskGroups)      delete[] m_pMaskGroups;
         if (m_pMasks)           delete[] m_pMasks;
+        if (m_pJoints)          delete[] m_pJoints;
 
         Initialize();
     }
@@ -268,6 +287,24 @@ namespace xserializer::io_functions
 
     //-------------------------------------------------------------------------
     template<> inline
+    xerr SerializeIO<xskeleton::skeleton::joint>(xserializer::stream& Stream, const xskeleton::skeleton::joint& J) noexcept
+    {
+        xerr Err;
+        false
+            || (Err = Stream.Serialize(J.m_Type))
+            || (Err = Stream.Serialize(J.m_SwingY))
+            || (Err = Stream.Serialize(J.m_SwingZ))
+            || (Err = Stream.Serialize(J.m_Twist))
+            || (Err = Stream.Serialize(J.m_Frame[0])) || (Err = Stream.Serialize(J.m_Frame[1])) || (Err = Stream.Serialize(J.m_Frame[2])) || (Err = Stream.Serialize(J.m_Frame[3]))
+            || (Err = Stream.Serialize(J.m_HingeMin)) || (Err = Stream.Serialize(J.m_HingeMax))
+            || (Err = Stream.Serialize(J.m_SwingCy))  || (Err = Stream.Serialize(J.m_SwingCz)) || (Err = Stream.Serialize(J.m_SwingRy)) || (Err = Stream.Serialize(J.m_SwingRz))
+            || (Err = Stream.Serialize(J.m_TwistCentre)) || (Err = Stream.Serialize(J.m_TwistHalf))
+            ;
+        return Err;
+    }
+
+    //-------------------------------------------------------------------------
+    template<> inline
     xerr SerializeIO<xskeleton::skeleton>(xserializer::stream& Stream, const xskeleton::skeleton& Skeleton) noexcept
     {
         xerr Err;
@@ -281,6 +318,8 @@ namespace xserializer::io_functions
             || (Err = Stream.Serialize(Skeleton.m_nMaskGroups))
             || (Err = Stream.Serialize(Skeleton.m_pMaskGroups,     Skeleton.m_nMaskGroups))
             || (Err = Stream.Serialize(Skeleton.m_pMasks,          static_cast<std::size_t>(Skeleton.m_nMaskGroups) * Skeleton.m_nBones))
+            || (Err = Stream.Serialize(Skeleton.m_nJoints))
+            || (Err = Stream.Serialize(Skeleton.m_pJoints,         Skeleton.m_nJoints))
             ;
         return Err;
     }
