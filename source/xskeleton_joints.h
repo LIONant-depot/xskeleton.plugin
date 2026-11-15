@@ -23,6 +23,14 @@ namespace xskeleton_joints
 
     inline constexpr float deg_v = 3.14159265f / 180.0f;
 
+    // the humanoid preset version a profile pins (0: none) and its name
+    inline int ProfileVersion(xskeleton_desc::joint_profile P) noexcept { return P == xskeleton_desc::joint_profile::HUMANOID_V1 ? 1 : P == xskeleton_desc::joint_profile::HUMANOID_V2 ? 2 : 0; }
+    // Pinning happens on activation: a skeleton with limits OFF always previews the newest preset (whatever JointProfile says); turning
+    // limits ON writes the newest profile into JointProfile (same undo step) and that version is used from then on until the user changes it.
+    inline constexpr auto newest_profile_v = xskeleton_desc::joint_profile::HUMANOID_V2;
+    inline xskeleton_desc::joint_profile EffectiveProfile(const xskeleton_desc::descriptor& D) noexcept { return D.m_JointLimits == xskeleton_desc::joint_limits_mode::ON ? D.m_JointProfile : newest_profile_v; }
+    inline const char* ProfileName(xskeleton_desc::joint_profile P) noexcept { const int V = ProfileVersion(P); return V == 1 ? xanimation::humanoid_v1_name_v : V == 2 ? xanimation::humanoid_v2_name_v : "no profile"; }
+
     inline xanimation::joint_limit LimitFromOverride(const xskeleton_desc::joint_override& O, const xmath::fquat& Rest, const xmath::fquat& SuggestedFrame)
     {
         xanimation::joint_limit L;
@@ -63,7 +71,7 @@ namespace xskeleton_joints
         const int N = static_cast<int>(Names.size());
         std::vector<std::string_view> Views(Names.begin(), Names.end());
         std::vector<xanimation::joint_preset_row> Rows(N);
-        if (Desc.m_JointProfile == xskeleton_desc::joint_profile::HUMANOID_V1) R.m_Limits = xanimation::HumanoidJointPresetV1(xanimation::skeleton_view{ Parents }, Views, Rest, &Rows);
+        if (const int V = ProfileVersion(EffectiveProfile(Desc)); V > 0) R.m_Limits = xanimation::HumanoidJointPreset(V, xanimation::skeleton_view{ Parents }, Views, Rest, &Rows);
         else { R.m_Limits.resize(N); for (int b = 0; b < N; ++b) R.m_Limits[b].m_Rest = Rest.m_Rotation[b]; }
         R.m_Source.resize(N);
         for (int b = 0; b < N; ++b)

@@ -390,7 +390,7 @@ namespace xskeleton_editor
                 switch (m_Kind)
                 {
                 case kind::info:   m_hBone = m_Parser.addOption("Bone", "One bone (its compiled name); default: every bone", false, 1); break;
-                case kind::mode:   m_hA = m_Parser.addOption("Mode", "On or Off", true, 1); break;
+                case kind::mode:   m_hA = m_Parser.addOption("Mode", "On or Off", false, 1); m_hB = m_Parser.addOption("Profile", "The preset the joints without an override take: Humanoid v1, Humanoid v2 or None (one undo step; says how many joints change)", false, 1); break;
                 case kind::view:
                     m_hA = m_Parser.addOption("On", "1: Joints mode on, 0: off", false, 1); m_hB = m_Parser.addOption("ResetPose", "1: the test pose back to rest", false, 1);
                     m_hC = m_Parser.addOption("Filter",  "Selected, Chain, Attention or All", false, 1);
@@ -992,7 +992,7 @@ namespace xskeleton_editor
             {
                 std::string T = std::format("Joint limits {} (profile {}): {} overrides, {} preset ({} frames need confirmation), {} unspecified\n"
                     , pDesc->m_JointLimits == xskeleton_desc::joint_limits_mode::ON ? "ON" : "OFF (a preview: compiled skeletons have no limits)"
-                    , pDesc->m_JointProfile == xskeleton_desc::joint_profile::HUMANOID_V1 ? xanimation::humanoid_v1_name_v : "none", R.m_nOverride, R.m_nPreset, R.m_nNeedFrame, R.m_nUnspecified);
+                    , xskeleton_joints::ProfileName(xskeleton_joints::EffectiveProfile(*pDesc)), R.m_nOverride, R.m_nPreset, R.m_nNeedFrame, R.m_nUnspecified);
                 for (int i = 0; i < int(Names.size()); ++i)
                     if (iBone < 0 || i == iBone) T += std::format("{}: {} | {} | {}\n", i, Names[i], R.m_Source[i], xskeleton_joints::Describe(R.m_Limits[i]));
                 for (const auto& Wn : R.m_Warnings) T += "warning: " + Wn + "\n";
@@ -1001,10 +1001,30 @@ namespace xskeleton_editor
             }
             case joint_cmd::kind::mode:
             {
-                std::string Mode; GetArg(Cmd.m_Parser, Cmd.m_hA, Mode);
+                std::string Mode, Profile; GetArg(Cmd.m_Parser, Cmd.m_hA, Mode); GetArg(Cmd.m_Parser, Cmd.m_hB, Profile);
+                if (!Profile.empty())
+                {
+                    xskeleton_desc::joint_profile P;
+                    if (xstrtool::findI(Profile, "v2") != std::string::npos) P = xskeleton_desc::joint_profile::HUMANOID_V2;
+                    else if (xstrtool::findI(Profile, "v1") != std::string::npos) P = xskeleton_desc::joint_profile::HUMANOID_V1;
+                    else if (xstrtool::findI(Profile, "none") == 0) P = xskeleton_desc::joint_profile::NONE;
+                    else return "JointLimits: -Profile \"Humanoid v1\", \"Humanoid v2\" or None";
+                    if (!JointRig(Names, Parents, Rest)) return "JointLimits: no compiled skeleton (compile it first)";
+                    // how many joints the change moves: the resolutions before and after, joint by joint
+                    const auto Old = pDesc->m_JointProfile;
+                    const auto A = xskeleton_joints::Resolve(*pDesc, Names, Parents, Rest);
+                    pDesc->m_JointProfile = P; const auto B = xskeleton_joints::Resolve(*pDesc, Names, Parents, Rest); pDesc->m_JointProfile = Old;
+                    int nChanged = 0;
+                    for (std::size_t i = 0; i < A.m_Limits.size(); ++i) nChanged += xskeleton_joints::Describe(A.m_Limits[i]) != xskeleton_joints::Describe(B.m_Limits[i]);
+                    const auto Err = CommitJointEdit(std::format("Joint profile {}", xskeleton_joints::ProfileName(P)), [&](desc& D) { D.m_JointProfile = P; return std::string{}; });
+                    if (!Err.empty()) return "JointLimits: " + Err;
+                    if (Mode.empty()) return std::format("JointLimits: profile {} ({} joints change)", xskeleton_joints::ProfileName(P), nChanged);
+                }
+                if (Mode.empty()) return "JointLimits: -Mode On|Off and/or -Profile name";
                 const bool bOn = xstrtool::findI(Mode, "on") == 0;
                 if (!bOn && xstrtool::findI(Mode, "off") != 0) return "JointLimits: -Mode On or Off";
-                const auto Err = CommitJointEdit(bOn ? "Joint limits on" : "Joint limits off", [&](desc& D) { D.m_JointLimits = bOn ? xskeleton_desc::joint_limits_mode::ON : xskeleton_desc::joint_limits_mode::OFF; return std::string{}; });
+                const auto Err = CommitJointEdit(bOn ? "Joint limits on" : "Joint limits off", [&](desc& D) { if (bOn && D.m_JointLimits != xskeleton_desc::joint_limits_mode::ON) D.m_JointProfile = xskeleton_joints::newest_profile_v;      // pinned on activation
+                                                                                                     D.m_JointLimits = bOn ? xskeleton_desc::joint_limits_mode::ON : xskeleton_desc::joint_limits_mode::OFF; return std::string{}; });
                 return Err.empty() ? std::format("JointLimits: {} (compile to apply)", bOn ? "on" : "off") : "JointLimits: " + Err;
             }
             case joint_cmd::kind::set:
@@ -1091,7 +1111,7 @@ namespace xskeleton_editor
                         {
                             xskeleton_desc::joint_override O; O.m_BoneName = Names[b]; O.m_Source = xskeleton_desc::joint_source::PRESET;
                             xskeleton_joints::SetOverrideFields(O, R.m_Limits[b], false);
-                            O.m_Provenance = std::format("{} ({})", xanimation::humanoid_v1_name_v, R.m_Source[b]);
+                            O.m_Provenance = std::format("{} ({})", xskeleton_joints::ProfileName(D.m_JointProfile), R.m_Source[b]);
                             D.m_JointOverrides.push_back(O); pO = &D.m_JointOverrides.back();
                         }
                         pO->m_Review = xskeleton_desc::joint_review::REVIEWED;
@@ -2413,6 +2433,14 @@ namespace xskeleton_editor
             ImGui::Text("Limits: %s", bOn ? "On" : "Off (what you see is a preview)");
             ImGui::SameLine();
             if (ImGui::SmallButton(bOn ? "Turn off" : "Turn on")) JointCommand(std::format("JointLimits -Mode {}", bOn ? "Off" : "On"));
+            {
+                static constexpr const char* Profiles[] = { "None", "Humanoid v1", "Humanoid v2" };
+                int Pf = int(xskeleton_joints::EffectiveProfile(*pDesc));
+                ImGui::SetNextItemWidth(140);
+                ImGui::BeginDisabled(!bOn); const bool bPick = ImGui::Combo("Profile", &Pf, Profiles, 3); ImGui::EndDisabled();
+                if (bPick && Pf != int(pDesc->m_JointProfile)) JointCommand(std::format("JointLimits -Profile \"{}\"", Profiles[Pf]));
+                if (ImGui::IsItemHovered()) xeditor::hint::Text(bOn ? "The preset the joints without an override take, pinned when limits were turned on: a newer preset never changes this skeleton by itself. Changing it says how many joints change (one undo step)." : "Limits are off: the preview follows the newest preset. Turning limits on pins it.");
+            }
             ImGui::Text("Preset %d   Overrides %d   Reviewed %d", m_JointRes.m_nPreset, m_JointRes.m_nOverride, nReviewed);
             static constexpr const char* Filters[] = { "Selected", "Chain", "Needs attention", "All" };
             int F = int(m_JFilter);

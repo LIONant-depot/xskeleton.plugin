@@ -251,7 +251,7 @@ namespace xskeleton_compiler
             m_FinalSkeleton.m_pJoints = new xskeleton::skeleton::joint[N];
             for (int i = 0; i < N; ++i) m_FinalSkeleton.m_pJoints[i] = xskeleton_joints::ToRuntime(R.m_Limits[i]);
             LogMessage(xresource_pipeline::msg_type::INFO, std::format("Joint limits on ({}): {} from overrides, {} from the preset ({} frames need confirmation), {} unspecified (free)"
-                , m_Descriptor.m_JointProfile == xskeleton_desc::joint_profile::HUMANOID_V1 ? xanimation::humanoid_v1_name_v : "no profile", R.m_nOverride, R.m_nPreset, R.m_nNeedFrame, R.m_nUnspecified));
+                , xskeleton_joints::ProfileName(m_Descriptor.m_JointProfile), R.m_nOverride, R.m_nPreset, R.m_nNeedFrame, R.m_nUnspecified));
 
             constexpr float D = 180.0f / 3.14159265f;
             std::string Txt = "# Joint limits as compiled (degrees). Ball: swing centre/radius (y, z), twist centre +- half. Hinge: min..max about the frame's z.\n# bone\tsource\tgeometry\tlimits\n";
@@ -646,7 +646,7 @@ namespace xskeleton_compiler
             xproperty::settings::context C;
             {
                 xskeleton_desc::descriptor D;
-                Check(D.m_JointLimits == xskeleton_desc::joint_limits_mode::OFF && D.m_JointProfile == xskeleton_desc::joint_profile::HUMANOID_V1, "[JL-002] limits are off by default (an old descriptor stays as it was)");
+                Check(D.m_JointLimits == xskeleton_desc::joint_limits_mode::OFF && D.m_JointProfile == xskeleton_desc::joint_profile::HUMANOID_V2, "[JL-002] limits are off by default (an old descriptor stays as it was)");
                 D.m_JointLimits = xskeleton_desc::joint_limits_mode::ON;
                 auto& O = D.m_JointOverrides.emplace_back();
                 O.m_BoneName = "mixamorig:LeftLeg"; O.m_Geometry = xskeleton_desc::joint_geometry::HINGE; O.m_HingeMin = -2; O.m_HingeMax = 120; O.m_Review = xskeleton_desc::joint_review::REVIEWED; O.m_Provenance = "selftest";
@@ -672,7 +672,13 @@ namespace xskeleton_compiler
             Add("Helper_Prop", Hips, { 0, 0, 0.3f });
             xskeleton_desc::descriptor D; D.m_JointLimits = xskeleton_desc::joint_limits_mode::ON;
             auto R = xskeleton_joints::Resolve(D, Names, Parents, Rest);
-            Check(R.m_Limits[Leg].m_Type == xanimation::joint_type::HINGE && R.m_Source[Leg].starts_with("preset"), "the knee resolves to the preset hinge");
+            Check(R.m_Limits[Leg].m_Type == xanimation::joint_type::BALL && R.m_Limits[Leg].m_SwingRy < 0.2f && R.m_Limits[Leg].m_TwistHalf < 0.25f && R.m_Source[Leg].starts_with("preset"), "a new skeleton (Humanoid v2): the knee is a ball that bends like a hinge and twists a little");
+            { D.m_JointProfile = xskeleton_desc::joint_profile::HUMANOID_V1;
+              Check(xskeleton_joints::Resolve(D, Names, Parents, Rest).m_Limits[Leg].m_Type == xanimation::joint_type::HINGE, "a skeleton with limits on, pinned to Humanoid v1, keeps its hinge knee");
+              D.m_JointLimits = xskeleton_desc::joint_limits_mode::OFF;
+              Check(xskeleton_joints::Resolve(D, Names, Parents, Rest).m_Limits[Leg].m_Type == xanimation::joint_type::BALL, "limits off: the preview follows the newest preset whatever JointProfile says");
+              D.m_JointLimits = xskeleton_desc::joint_limits_mode::ON;
+              D.m_JointProfile = xskeleton_desc::joint_profile::HUMANOID_V2; }
             Check(R.m_Limits[Hips].m_Type == xanimation::joint_type::FREE && R.m_Limits[8].m_Type == xanimation::joint_type::FREE && R.m_Source[8] == "unspecified", "[JL-012] hips free; an unknown bone unspecified");
             auto& O = D.m_JointOverrides.emplace_back(); O.m_BoneName = "mixamorig:LeftLeg"; O.m_Geometry = xskeleton_desc::joint_geometry::HINGE; O.m_HingeMin = 0; O.m_HingeMax = 100;
             auto& Bad = D.m_JointOverrides.emplace_back(); Bad.m_BoneName = "NoSuchBone";

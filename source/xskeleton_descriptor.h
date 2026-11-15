@@ -157,10 +157,11 @@ namespace xskeleton_desc
     { xproperty::settings::enum_item("Off", joint_limits_mode::OFF)
     , xproperty::settings::enum_item("On",  joint_limits_mode::ON)
     };
-    enum class joint_profile : std::uint8_t { NONE, HUMANOID_V1 };
+    enum class joint_profile : std::uint8_t { NONE, HUMANOID_V1, HUMANOID_V2 };
     static constexpr auto joint_profile_v = std::array
     { xproperty::settings::enum_item("None",        joint_profile::NONE)
     , xproperty::settings::enum_item("Humanoid v1", joint_profile::HUMANOID_V1)
+    , xproperty::settings::enum_item("Humanoid v2", joint_profile::HUMANOID_V2)
     };
     enum class joint_geometry : std::uint8_t { FREE, FIXED, HINGE, BALL };
     static constexpr auto joint_geometry_v = std::array
@@ -319,7 +320,7 @@ namespace xskeleton_desc
         std::vector<mask_group>     m_MaskGroups    = {};
         bool                        m_bCompactTree  = false;  // the bone tree is too deep for xproperty's paths: RootBone is empty in the properties, the tree follows as the "BoneOverrides" table
         joint_limits_mode           m_JointLimits   = joint_limits_mode::OFF;       // Off: every joint free, as before (existing skeletons stay off until turned on)
-        joint_profile               m_JointProfile  = joint_profile::HUMANOID_V1;   // pinned by version: a newer preset never changes this skeleton by itself
+        joint_profile               m_JointProfile  = joint_profile::HUMANOID_V2;   // pinned by version: a newer preset never changes this skeleton by itself (it is always saved: a descriptor that saved v1 stays v1; one saved before limits existed never chose and takes the current default)
         std::vector<joint_override> m_JointOverrides = {};
 
         joint_override* findJointOverride(std::string_view Bone) noexcept { for (auto& J : m_JointOverrides) if (J.m_BoneName == Bone) return &J; return nullptr; }
