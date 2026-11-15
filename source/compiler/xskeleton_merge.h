@@ -259,6 +259,16 @@ namespace xskeleton_desc::merge
             );
         Manifest.m_NumBones = static_cast<int>(Bones.size());
 
+        // the mask groups, by compiled bone name (entries naming no bone are left out: the skeleton compile warns about them)
+        Manifest.m_Masks.clear();
+        for (const auto& G : Descriptor.m_MaskGroups)
+        {
+            auto& M = Manifest.m_Masks.emplace_back();
+            M.m_Name = G.m_Name;
+            for (const auto& E : G.m_Entries)
+                for (const auto& B : Bones) if (B.m_Name == E.m_BoneName) { M.m_Bones.push_back({ .m_Bone = E.m_BoneName, .m_Weight = std::clamp(E.m_Weight, 0.0f, 1.0f) }); break; }
+        }
+
         Manifest.m_PreTransformScale       = Descriptor.m_PreTransform.m_Scale;
         Manifest.m_PreTransformRotationDeg = Descriptor.m_PreTransform.m_Rotation;
         Manifest.m_PreTransformTranslation = Descriptor.m_PreTransform.m_Translation;

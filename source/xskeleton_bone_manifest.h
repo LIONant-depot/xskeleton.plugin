@@ -59,6 +59,30 @@ namespace xskeleton_desc
             )
         };
 
+        // The skeleton's named mask groups (the descriptor's MaskGroups), exported for consumers that reference one by name: an anim
+        // package's layer with a SharedMask (layer contract v3). Bone names as compiled; weights 0..1.
+        struct mask_bone
+        {
+            std::string     m_Bone   = {};
+            float           m_Weight = 1.0f;
+            XPROPERTY_DEF
+            ( "mask_bone", mask_bone
+            , obj_member<"Bone",   &mask_bone::m_Bone,   member_flags<flags::SHOW_READONLY> >
+            , obj_member<"Weight", &mask_bone::m_Weight, member_flags<flags::SHOW_READONLY> >
+            )
+        };
+        struct mask
+        {
+            std::string             m_Name  = {};
+            std::vector<mask_bone>  m_Bones = {};
+            XPROPERTY_DEF
+            ( "mask", mask
+            , obj_member<"Name",  &mask::m_Name,  member_flags<flags::SHOW_READONLY> >
+            , obj_member<"Bones", &mask::m_Bones, member_flags<flags::SHOW_READONLY> >
+            )
+        };
+        std::vector<mask>          m_Masks    = {};
+
         std::vector<bone_entry>    m_Bones    = {};   // final compiled bone order - index i matches xskeleton::skeleton::m_pBones[i]
         int                        m_NumBones = 0;
 
@@ -94,10 +118,13 @@ namespace xskeleton_desc
         , obj_member<"PostTransformScale",        &bone_manifest::m_PostTransformScale,        member_flags<flags::SHOW_READONLY> >
         , obj_member<"PostTransformRotationDeg",  &bone_manifest::m_PostTransformRotationDeg,  member_flags<flags::SHOW_READONLY> >
         , obj_member<"PostTransformTranslation",  &bone_manifest::m_PostTransformTranslation,  member_flags<flags::SHOW_READONLY> >
+        , obj_member<"Masks",                     &bone_manifest::m_Masks,                     member_flags<flags::SHOW_READONLY> >
         )
     };
     XPROPERTY_REG(bone_manifest)
     XPROPERTY_REG2(anim_bone_entry_, bone_manifest::bone_entry)
+    XPROPERTY_REG2(anim_mask_bone_, bone_manifest::mask_bone)
+    XPROPERTY_REG2(anim_mask_, bone_manifest::mask)
 
     // Where a skeleton's compile writes its manifest, relative to the project: what a consumer (a skin, an anim package) registers as one of its
     // m_Dependencies.m_Assets so that it compiles again whenever its skeleton does (a PreTransform edit, a bone change)
