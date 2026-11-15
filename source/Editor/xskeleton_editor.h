@@ -386,7 +386,15 @@ namespace xskeleton_editor
                 {
                 case kind::info:   m_hBone = m_Parser.addOption("Bone", "One bone (its compiled name); default: every bone", false, 1); break;
                 case kind::mode:   m_hA = m_Parser.addOption("Mode", "On or Off", true, 1); break;
-                case kind::view:   m_hA = m_Parser.addOption("On", "1: Joints mode on, 0: off", false, 1); m_hB = m_Parser.addOption("ResetPose", "1: the test pose back to rest", false, 1); break;
+                case kind::view:
+                    m_hA = m_Parser.addOption("On", "1: Joints mode on, 0: off", false, 1); m_hB = m_Parser.addOption("ResetPose", "1: the test pose back to rest", false, 1);
+                    m_hC = m_Parser.addOption("Filter",  "Selected, Chain, Attention or All", false, 1);
+                    m_hD = m_Parser.addOption("Include", "1: start Include a pose on the selected joint, Ball: make it a ball, Accept, Cancel", false, 1);
+                    m_hE = m_Parser.addOption("Frame",   "Confirm, Snap (to the test pose's bend) or a roll in degrees: a pending frame change", false, 1);
+                    m_hF = m_Parser.addOption("FrameApply", "Rotate (the range turns with the frame), Keep (the range stays) or Cancel", false, 1);
+                    m_hG = m_Parser.addOption("Check", "1: start the guided check of the selected joint; Review: answer yes at its end", false, 1);
+                    m_hMirror = m_Parser.addOption("Asym", "the asymmetric-pair question: Overwrite, This or Cancel", false, 1);
+                    break;
                 case kind::set:
                     m_hBone = m_Parser.addOption("Bone",     "The bone (its compiled name)", true, 1);
                     m_hA    = m_Parser.addOption("Geometry", "Free, Fixed, Hinge or Ball", false, 1);
@@ -504,6 +512,30 @@ namespace xskeleton_editor
         float                                                   m_JEdit[8] = {};            // the panel's numeric fields while one is being edited
         int                                                     m_JEditBone = -1;
         ImVec2                                                  m_HandleScreen{};
+        // J3: direct handles, Include this pose, frame adjustment, the guided check, filters (view state; edits go through JointSet)
+        enum class joint_filter : int { SELECTED, CHAIN, ATTENTION, ALL };
+        joint_filter                                            m_JFilter = joint_filter::SELECTED;
+        struct joint_handle { int m_Kind; ImVec2 m_Screen; };
+        std::vector<joint_handle>                               m_JHandles;                 // the selected joint's handles this frame
+        int                                                     m_JHandleHover = -1, m_JDrag = -1;
+        bool                                                    m_JDragShift = false;
+        xanimation::joint_limit                                 m_JDragStart, m_JPreview;
+        ImVec2                                                  m_JDragMouse0{}, m_JDragHandle0{};
+        std::string                                             m_JDragTip;
+        bool                                                    m_bJAsymPopup = false;      // a mirrored edit met a reviewed, different other side
+        std::string                                             m_JAsymMsg, m_JAsymName, m_JAsymArgs;
+        bool                                                    m_bJInclude = false, m_bJIncludeBall = false;
+        int                                                     m_JIncludeBone = -1;
+        xanimation::joint_limit                                 m_JIncludeProposal;
+        xanimation::joint_fit_report                            m_JIncludeRep;
+        bool                                                    m_bJIncludeValid = false;
+        bool                                                    m_bJFramePending = false;   // a frame change waiting for "rotate the envelope" / "keep the envelope"
+        int                                                     m_JFrameBone = -1;
+        xmath::fquat                                            m_JFrameNew = xmath::fquat::fromIdentity();
+        float                                                   m_JFrameRoll = 0;
+        float                                                   m_JCheckT = -1;             // the guided check: seconds into it; -1 off, -2 finished (asks)
+        int                                                     m_JCheckBone = -1;
+        std::string                                             m_JCheckLabel;
 
         session(xresource::full_guid Guid, xresource_editor::library::guid LibraryGuid, xgpu::device* pDevice) noexcept
             : descriptor_editor("Skeleton", Guid, LibraryGuid, pDevice)
@@ -860,8 +892,41 @@ namespace xskeleton_editor
                 if (!On.empty()) { m_bJointsMode = On == "1" || On == "true"; if (m_bJointsMode) m_Settings.m_Pose = pose_mode::FROZEN; else { m_bTestPose = m_bPulling = false; m_PullNote.clear(); } }
                 if (Reset == "1" || Reset == "true") { m_bTestPose = false; m_PullNote.clear(); }
                 const int b = SelectedJoint();
-                return std::format("JointsView: {}; selected {}; handle {}; test pose {}; last pull: {}", m_bJointsMode ? "on" : "off", b >= 0 && b < int(m_JNames.size()) ? m_JNames[b] : "(none)"
-                    , m_PullEff >= 0 ? std::format("{:.0f} {:.0f}", m_HandleScreen.x, m_HandleScreen.y) : "(none)", m_bTestPose ? "yes" : "no", m_PullNote.empty() ? "(none)" : m_PullNote);
+                std::string Filter, Inc, Fr, FrA, Chk, Asym, Said;
+                GetArg(Cmd.m_Parser, Cmd.m_hC, Filter); GetArg(Cmd.m_Parser, Cmd.m_hD, Inc); GetArg(Cmd.m_Parser, Cmd.m_hE, Fr); GetArg(Cmd.m_Parser, Cmd.m_hF, FrA); GetArg(Cmd.m_Parser, Cmd.m_hG, Chk); GetArg(Cmd.m_Parser, Cmd.m_hMirror, Asym);
+                UpdateJoints();
+                std::vector<std::string_view> Vw(m_JNames.begin(), m_JNames.end());
+                const int Oth = b >= 0 && b < int(m_JNames.size()) ? xanimation::FindMirrorBone(Vw, b) : -1;
+                const bool bSymV = m_bJointSymmetry && Oth >= 0 && Oth != b;
+                if (!Filter.empty()) m_JFilter = xstrtool::findI(Filter, "chain") == 0 ? joint_filter::CHAIN : xstrtool::findI(Filter, "att") == 0 ? joint_filter::ATTENTION : xstrtool::findI(Filter, "all") == 0 ? joint_filter::ALL : joint_filter::SELECTED;
+                if (!Inc.empty() && b >= 0)
+                {
+                    if (Inc == "1") { m_bJInclude = true; m_bJIncludeBall = false; m_JIncludeBone = b; m_bTestPose = false; m_PullNote.clear(); }
+                    else if (xstrtool::findI(Inc, "ball") == 0) m_bJIncludeBall = true;
+                    else if (xstrtool::findI(Inc, "acc") == 0) Said = IncludeAccept(bSymV);
+                    else { m_bJInclude = m_bJIncludeBall = false; m_bTestPose = false; m_PullNote.clear(); m_JointKey.clear(); }
+                }
+                if (!Fr.empty() && b >= 0 && b < int(m_JNames.size()))
+                {
+                    const auto& Lb = m_JointRes.m_Limits[b];
+                    if (xstrtool::findI(Fr, "conf") == 0) Said = JointCommand(std::format("JointSet -Bone {} -Frame \"{} {} {} {}\"{}", xeditor::Quote(m_JNames[b]), Lb.m_Frame.m_X, Lb.m_Frame.m_Y, Lb.m_Frame.m_Z, Lb.m_Frame.m_W, bSymV ? " -Mirror 1" : ""));
+                    else if (xstrtool::findI(Fr, "snap") == 0) { xmath::fquat Fq; if (FrameFromPoseBend(b, Fq)) { m_bJFramePending = true; m_JFrameBone = b; m_JFrameNew = Fq; Said = "frame pending (snapped to the pose's bend)"; } else Said = "snap: the joint is not bent in the test pose"; }
+                    else { char* pEnd = nullptr; const float Roll = std::strtof(Fr.c_str(), &pEnd); m_bJFramePending = true; m_JFrameBone = b; m_JFrameRoll = Roll; m_JFrameNew = (Lb.m_Frame * xanimation::details::AxisAngle(xanimation::details::AxX, Roll * xskeleton_joints::deg_v)).NormalizeCopy(); Said = "frame pending (rolled)"; }
+                }
+                if (!FrA.empty()) { if (xstrtool::findI(FrA, "rot") == 0) Said = ApplyFrame(false, bSymV); else if (xstrtool::findI(FrA, "keep") == 0) Said = ApplyFrame(true, bSymV); else { m_bJFramePending = false; m_JFrameRoll = 0; } }
+                if (Chk == "1" && b >= 0) { m_JCheckT = 0; m_JCheckBone = b; }
+                if (xstrtool::findI(Chk, "rev") == 0 && m_JCheckT == -2 && m_JCheckBone >= 0) { Said = JointCommand(std::format("JointReview -Bone {}{} -By User", xeditor::Quote(m_JNames[m_JCheckBone]), bSymV ? " -Mirror 1" : "")); m_JCheckT = -1; }
+                if (!Asym.empty() && m_bJAsymPopup) Said = ResolveAsym(xstrtool::findI(Asym, "over") == 0 ? 0 : xstrtool::findI(Asym, "this") == 0 ? 1 : 2);
+                std::string Hs;
+                for (const auto& H : m_JHandles) Hs += std::format("{}{} {:.0f} {:.0f}", Hs.empty() ? "" : ", ", JHTag(H.m_Kind), H.m_Screen.x, H.m_Screen.y);
+                static constexpr const char* FiltN[] = { "selected", "chain", "attention", "all" };
+                return std::format("JointsView: {}; selected {}; handle {}; test pose {}; last pull: {}; handles: {}; filter {}; attention {}; include {}; frame pending {}; check {}; asym popup {}{}{}"
+                    , m_bJointsMode ? "on" : "off", b >= 0 && b < int(m_JNames.size()) ? m_JNames[b] : "(none)"
+                    , m_PullEff >= 0 ? std::format("{:.0f} {:.0f}", m_HandleScreen.x, m_HandleScreen.y) : "(none)", m_bTestPose ? "yes" : "no", m_PullNote.empty() ? "(none)" : m_PullNote
+                    , Hs.empty() ? "(none)" : Hs, FiltN[int(m_JFilter)], JointAttention().size()
+                    , !m_bJInclude ? std::string("off") : m_bJIncludeValid ? std::format("on (proposal {}; off-model {})", xskeleton_joints::Describe(m_JIncludeProposal), m_JIncludeRep.m_nOffModel) : std::string("on (no pose yet)")
+                    , m_bJFramePending ? "yes" : "no", m_JCheckT == -1 ? std::string("off") : m_JCheckT == -2 ? std::string("asking") : std::format("{:.1f} s", m_JCheckT)
+                    , m_bJAsymPopup ? "yes" : "no", Said.empty() ? "" : "; said: ", Said);
             }
             if (Cmd.m_Kind != joint_cmd::kind::mode && !JointRig(Names, Parents, Rest)) return std::format("{}: no compiled skeleton (compile it first)", JointCmdName(Cmd.m_Kind));
             auto R = xskeleton_joints::Resolve(*pDesc, Names, Parents, Rest);
@@ -1306,7 +1371,7 @@ namespace xskeleton_editor
             if (bGizmo) ImGui::Dummy(Avail);
             else        ImGui::InvisibleButton("##SkeletonViewport", Avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
             const bool bHovered = ImGui::IsItemHovered() && !bGizmo;
-            if (!xeditor::transform_gizmo::Dragging() && !m_bPulling && !(m_bJointsMode && m_bPullHover))
+            if (!xeditor::transform_gizmo::Dragging() && !m_bPulling && !(m_bJointsMode && (m_bPullHover || m_JHandleHover >= 0 || m_JDrag >= 0)))
             {
                 xeditor::PreviewGestures();
                 m_Scene.HandleInput();
@@ -1362,7 +1427,8 @@ namespace xskeleton_editor
                 int iHit = -1;
                 PickWedge(*pSkeleton, m_Scaled, m_Scene.m_View.getPosition(), Dir, m_Scene.m_Radius, iHit, T);
                 m_iHovered = iHit;
-                if (m_bJointsMode && m_bPullHover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) StartPull();     // the handle wins over a pick
+                if (m_bJointsMode && m_JHandleHover >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) StartHandleDrag(Mouse);   // a limit handle wins
+                else if (m_bJointsMode && m_bPullHover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) StartPull();     // the handle wins over a pick
                 else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 {
                     if (iHit != -1) Select(iHit, ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyShift);
@@ -1468,6 +1534,16 @@ namespace xskeleton_editor
             if (b < 0 || m_PullEff < 0) return;
             m_bPulling  = true;
             m_PullBone  = b;
+            // Include this pose: only that joint's limit is lifted, every other joint keeps its own
+            if (m_bJInclude && m_JIncludeBone >= 0 && m_JIncludeBone < int(m_JointRes.m_Limits.size()))
+            {
+                auto Lim = m_JointRes.m_Limits;
+                auto& J  = Lim[m_JIncludeBone];
+                if (J.m_Type == xanimation::joint_type::HINGE && !m_bJIncludeBall) { J.m_HingeMin = -3.14159265f; J.m_HingeMax = 3.14159265f; }  // still a hinge: the pose explores its axis
+                else J = xanimation::joint_limit{};                                                                                            // a ball (or "make it a ball"): free
+                m_Ik.Setup(m_JParents, Lim);
+            }
+            else m_Ik.Setup(m_JParents, m_JointRes.m_Limits);
             m_PullBase  = m_bTestPose ? m_TestPose : m_JRest;     // a pull solves from the pose it started on (the result does not depend on how often the mouse moved)
             m_PullPlane = m_PullTargetView = m_Scaled[m_PullEff].m_Position;
         }
@@ -1497,110 +1573,556 @@ namespace xskeleton_editor
             return "missed";
         }
 
+        //----------------------------------------------------------------------------------------
+        // J3: the limit's own handles (drag the cone's edges and centre, the twist and hinge arcs' ends), Include this pose, the joint
+        // frame, the guided check, display filters. Every edit is one JointSet (one undo step, console parity); Esc cancels a drag.
+        //----------------------------------------------------------------------------------------
+        enum jh : int { JH_RY_P, JH_RY_N, JH_RZ_P, JH_RZ_N, JH_CENTRE, JH_TW_LO, JH_TW_HI, JH_H_MIN, JH_H_MAX, JH_COUNT };
+        static const char* JHName(int k) noexcept
+        {
+            static constexpr const char* N[] = { "swing y radius", "swing y radius", "swing z radius", "swing z radius", "swing centre", "twist low end", "twist high end", "hinge min", "hinge max" };
+            return k >= 0 && k < JH_COUNT ? N[k] : "?";
+        }
+        static const char* JHTag(int k) noexcept
+        {
+            static constexpr const char* N[] = { "RY+", "RY-", "RZ+", "RZ-", "C", "TW-", "TW+", "H-", "H+" };
+            return k >= 0 && k < JH_COUNT ? N[k] : "?";
+        }
+
+        struct joint_draw_ctx { xmath::fvec3 P0, C, Dir, Ref; xmath::fquat Ap = xmath::fquat::fromIdentity(); float Len = 0; };
+
+        joint_draw_ctx JointCtx(int b, const xanimation::joint_limit& L, const xmath::fquat& Local) const noexcept
+        {
+            using namespace xanimation;
+            joint_draw_ctx K;
+            const int c = FirstChild(b);
+            K.P0  = m_Scaled[b].m_Position;
+            K.Len = std::max(c >= 0 ? (m_Scaled[c].m_Position - K.P0).Length() : 0.0f, 0.03f * m_Scene.m_Radius);
+            const auto ParentR = m_JParents[b] >= 0 ? m_CurR[m_JParents[b]] : xmath::fquat::fromIdentity();
+            K.Ap = (ParentR * L.m_Rest * L.m_Frame).NormalizeCopy();
+            float Sy = 0, Sz = 0, T = 0; bool Sing = false;
+            if (L.m_Type == joint_type::BALL) details::SplitBall(JointRotation(L, Local), Sy, Sz, T, Sing);
+            const auto Sw = K.Ap * details::ExpV(xmath::fvec3(0, Sy, Sz));
+            K.Dir = Sw * xmath::fvec3(1, 0, 0); K.Ref = Sw * xmath::fvec3(0, 1, 0); K.C = K.P0 + K.Dir * (K.Len * 0.6f);
+            return K;
+        }
+        static xmath::fvec3 ConePoint(const joint_draw_ctx& K, float Sy, float Sz) noexcept { return K.P0 + (K.Ap * (xanimation::details::MakeBall(Sy, Sz, 0) * xmath::fvec3(1, 0, 0))) * (K.Len * 0.9f); }
+        static xmath::fvec3 TwistPoint(const joint_draw_ctx& K, float a, float r = 0.18f) noexcept { return K.C + (xanimation::details::AxisAngle(K.Dir, a) * K.Ref) * (K.Len * r); }
+        static xmath::fvec3 HingePoint(const joint_draw_ctx& K, float a) noexcept { return K.P0 + (K.Ap * (xanimation::details::AxisAngle(xmath::fvec3(0, 0, 1), a) * xmath::fvec3(1, 0, 0))) * (K.Len * 0.9f); }
+
+        static bool HandleUsed(const xanimation::joint_limit& L, int k) noexcept
+        {
+            using namespace xanimation;
+            if (L.m_Type == joint_type::HINGE) return k == JH_H_MIN || k == JH_H_MAX;
+            if (L.m_Type != joint_type::BALL) return false;
+            if (k == JH_RY_P || k == JH_RY_N) return L.m_SwingY == axis_motion::LIMITED;
+            if (k == JH_RZ_P || k == JH_RZ_N) return L.m_SwingZ == axis_motion::LIMITED;
+            if (k == JH_CENTRE) return L.m_SwingY != axis_motion::FREE || L.m_SwingZ != axis_motion::FREE;
+            if (k == JH_TW_LO || k == JH_TW_HI) return L.m_Twist == axis_motion::LIMITED && L.m_TwistHalf < 3.14f;
+            return false;
+        }
+        static xmath::fvec3 HandlePoint(const joint_draw_ctx& K, const xanimation::joint_limit& L, int k) noexcept
+        {
+            switch (k)
+            {
+            case JH_RY_P:   return ConePoint(K, L.m_SwingCy + L.m_SwingRy, L.m_SwingCz);
+            case JH_RY_N:   return ConePoint(K, L.m_SwingCy - L.m_SwingRy, L.m_SwingCz);
+            case JH_RZ_P:   return ConePoint(K, L.m_SwingCy, L.m_SwingCz + L.m_SwingRz);
+            case JH_RZ_N:   return ConePoint(K, L.m_SwingCy, L.m_SwingCz - L.m_SwingRz);
+            case JH_CENTRE: return ConePoint(K, L.m_SwingCy, L.m_SwingCz);
+            case JH_TW_LO:  return TwistPoint(K, L.m_TwistCentre - L.m_TwistHalf, 0.22f);
+            case JH_TW_HI:  return TwistPoint(K, L.m_TwistCentre + L.m_TwistHalf, 0.22f);
+            case JH_H_MIN:  return HingePoint(K, L.m_HingeMin);
+            default:        return HingePoint(K, L.m_HingeMax);
+            }
+        }
+        // a handle's parameters (radians, or a scale of both radii with Shift)
+        static int HandleParams(const xanimation::joint_limit& L, int k, bool bBoth, float p[2]) noexcept
+        {
+            switch (k)
+            {
+            case JH_RY_P: case JH_RY_N: p[0] = bBoth ? 1.0f : L.m_SwingRy; return 1;
+            case JH_RZ_P: case JH_RZ_N: p[0] = bBoth ? 1.0f : L.m_SwingRz; return 1;
+            case JH_CENTRE: p[0] = L.m_SwingCy; p[1] = L.m_SwingCz; return 2;
+            case JH_TW_LO:  p[0] = L.m_TwistCentre - L.m_TwistHalf; return 1;
+            case JH_TW_HI:  p[0] = L.m_TwistCentre + L.m_TwistHalf; return 1;
+            case JH_H_MIN:  p[0] = L.m_HingeMin; return 1;
+            default:        p[0] = L.m_HingeMax; return 1;
+            }
+        }
+        static xanimation::joint_limit WithParams(const xanimation::joint_limit& L0, int k, bool bBoth, const float p[2]) noexcept
+        {
+            constexpr float Pi = 3.14159265f, MinR = 0.5f * Pi / 180.0f, MaxR = 179.0f * Pi / 180.0f;
+            auto L = L0;
+            switch (k)
+            {
+            case JH_RY_P: case JH_RY_N: case JH_RZ_P: case JH_RZ_N:
+                if (bBoth) { const float s = std::max(p[0], 0.01f); L.m_SwingRy = std::clamp(L0.m_SwingRy * s, MinR, MaxR); L.m_SwingRz = std::clamp(L0.m_SwingRz * s, MinR, MaxR); }
+                else if (k <= JH_RY_N) L.m_SwingRy = std::clamp(p[0], MinR, MaxR);
+                else                   L.m_SwingRz = std::clamp(p[0], MinR, MaxR);
+                break;
+            case JH_CENTRE: L.m_SwingCy = std::clamp(p[0], -Pi * 0.9f, Pi * 0.9f); L.m_SwingCz = std::clamp(p[1], -Pi * 0.9f, Pi * 0.9f); break;
+            case JH_TW_LO: case JH_TW_HI:
+            {
+                float Lo = L0.m_TwistCentre - L0.m_TwistHalf, Hi = L0.m_TwistCentre + L0.m_TwistHalf;
+                if (k == JH_TW_LO) Lo = std::min(p[0], Hi); else Hi = std::max(p[0], Lo);
+                L.m_TwistCentre = 0.5f * (Lo + Hi); L.m_TwistHalf = std::min(Pi, 0.5f * (Hi - Lo));
+                break;
+            }
+            case JH_H_MIN: L.m_HingeMin = std::clamp(p[0], -Pi, L0.m_HingeMax); break;
+            default:       L.m_HingeMax = std::clamp(p[0], L0.m_HingeMin, Pi); break;
+            }
+            return L;
+        }
+
+        void StartHandleDrag(const ImVec2& Mouse) noexcept
+        {
+            const int b = SelectedJoint();
+            if (b < 0 || m_JHandleHover < 0 || b >= int(m_JointRes.m_Limits.size())) return;
+            for (const auto& H : m_JHandles) if (H.m_Kind == m_JHandleHover) m_JDragHandle0 = H.m_Screen;
+            m_JDrag = m_JHandleHover; m_JDragShift = ImGui::GetIO().KeyShift;
+            m_JDragStart = m_JPreview = m_JointRes.m_Limits[b];
+            m_JDragMouse0 = Mouse;
+        }
+
+        // the handle follows the mouse: its parameters solved so the handle's screen point lands under the mouse (Gauss-Newton from the drag's start)
+        void DragHandle(const joint_draw_ctx& K, const ImVec2& Min, const ImVec2& Size, const ImVec2& Mouse) noexcept
+        {
+            const bool bBoth = m_JDragShift && m_JDrag <= JH_RZ_N;
+            float p[2] = {}, h0[2] = {};
+            const int n = HandleParams(m_JDragStart, m_JDrag, bBoth, p);
+            h0[0] = p[0]; h0[1] = p[1];
+            const ImVec2 Target(m_JDragHandle0.x + Mouse.x - m_JDragMouse0.x, m_JDragHandle0.y + Mouse.y - m_JDragMouse0.y);
+            auto Screen = [&](const float q[2], ImVec2& S) { return ProjectView(HandlePoint(K, WithParams(m_JDragStart, m_JDrag, bBoth, q), m_JDrag), Min, Size, S); };
+            for (int It = 0; It < 8; ++It)
+            {
+                ImVec2 S; if (!Screen(p, S)) break;
+                const float ex = Target.x - S.x, ey = Target.y - S.y;
+                if (ex * ex + ey * ey < 0.25f) break;
+                float J[2][2] = {};
+                for (int d = 0; d < n; ++d)
+                {
+                    float q[2] = { p[0], p[1] }; constexpr float h = 1e-3f; q[d] += h;
+                    ImVec2 S2; if (!Screen(q, S2)) return;
+                    J[0][d] = (S2.x - S.x) / h; J[1][d] = (S2.y - S.y) / h;
+                }
+                if (n == 1)
+                {
+                    const float jj = J[0][0] * J[0][0] + J[1][0] * J[1][0];
+                    if (jj < 1e-6f) break;
+                    p[0] += (J[0][0] * ex + J[1][0] * ey) / (jj + 1.0f);
+                }
+                else
+                {
+                    const float a = J[0][0], bb = J[0][1], c = J[1][0], d = J[1][1];
+                    const float A11 = a * a + c * c + 1.0f, A12 = a * bb + c * d, A22 = bb * bb + d * d + 1.0f, g1 = a * ex + c * ey, g2 = bb * ex + d * ey;
+                    const float Det = A11 * A22 - A12 * A12;
+                    if (std::abs(Det) < 1e-9f) break;
+                    p[0] += (A22 * g1 - A12 * g2) / Det; p[1] += (A11 * g2 - A12 * g1) / Det;
+                }
+                if (!bBoth) HandleParams(WithParams(m_JDragStart, m_JDrag, false, p), m_JDrag, false, p);     // keep inside the clamps
+            }
+            m_JPreview = WithParams(m_JDragStart, m_JDrag, bBoth, p);
+            float q0[2], q1[2];
+            HandleParams(m_JDragStart, m_JDrag, false, q0); HandleParams(m_JPreview, m_JDrag, false, q1);
+            constexpr float D = 57.29578f;
+            m_JDragTip = n == 2 ? std::format("{}: {:.1f}, {:.1f} deg (delta {:+.1f}, {:+.1f})", JHName(m_JDrag), q1[0] * D, q1[1] * D, (q1[0] - q0[0]) * D, (q1[1] - q0[1]) * D)
+                       : bBoth ? std::format("both swing radii: {:.1f}, {:.1f} deg (x{:.2f})", m_JPreview.m_SwingRy * D, m_JPreview.m_SwingRz * D, p[0])
+                       : std::format("{}: {:.1f} deg (delta {:+.1f})", JHName(m_JDrag), q1[0] * D, (q1[0] - q0[0]) * D);
+            (void)h0;
+        }
+
+        // the JointSet arguments that reproduce a limit's ranges (degrees)
+        static std::string JointSetArgs(const xanimation::joint_limit& L)
+        {
+            constexpr float D = 57.29578f;
+            using namespace xanimation;
+            if (L.m_Type == joint_type::HINGE) return std::format("-Geometry Hinge -Hinge \"{} {}\"", L.m_HingeMin * D, L.m_HingeMax * D);
+            if (L.m_Type == joint_type::BALL)
+            {
+                static constexpr const char* Ax[] = { "Free", "Limited", "Locked" };
+                return std::format("-Geometry Ball -Swing \"{} {} {} {}\" -Twist \"{} {}\" -Axes \"{} {} {}\"", L.m_SwingCy * D, L.m_SwingCz * D, L.m_SwingRy * D, L.m_SwingRz * D
+                                  , L.m_TwistCentre * D, L.m_TwistHalf * D, Ax[int(L.m_SwingY)], Ax[int(L.m_SwingZ)], Ax[int(L.m_Twist)]);
+            }
+            return L.m_Type == joint_type::FIXED ? "-Geometry Fixed" : "-Geometry Free";
+        }
+
+        // one JointSet for the joint (with its mirror when symmetry is on); a reviewed, different other side asks first
+        std::string CommitJointLimit(const std::string& Name, const std::string& Args, bool bSym) noexcept
+        {
+            const auto R = JointCommand(std::format("JointSet -Bone {} {}{}", xeditor::Quote(Name), Args, bSym ? " -Mirror 1" : ""));
+            if (R.find("asymmetric pair") != std::string::npos)
+            {
+                m_bJAsymPopup = true; m_JAsymMsg = R;
+                m_JAsymName = std::format("JointSet -Bone {} {} -Mirror 1 -Force 1", xeditor::Quote(Name), Args);       // overwrite the other side
+                m_JAsymArgs = std::format("JointSet -Bone {} {}", xeditor::Quote(Name), Args);                          // this side only
+            }
+            return R;
+        }
+        std::string MirrorJoint(const std::string& Name) noexcept
+        {
+            const auto R = JointCommand(std::format("JointMirror -Bone {}", xeditor::Quote(Name)));
+            if (R.find("asymmetric pair") != std::string::npos)
+            { m_bJAsymPopup = true; m_JAsymMsg = R; m_JAsymName = std::format("JointMirror -Bone {} -Force 1", xeditor::Quote(Name)); m_JAsymArgs.clear(); }
+            return R;
+        }
+        // the asymmetric pair's choice: 0 overwrite the other side, 1 this side only, 2 cancel (the commands were kept when it was asked)
+        std::string ResolveAsym(int Choice) noexcept
+        {
+            std::string R = "cancelled: nothing changed";
+            if (Choice == 0) R = JointCommand(m_JAsymName);
+            if (Choice == 1 && !m_JAsymArgs.empty()) R = JointCommand(m_JAsymArgs);
+            m_bJAsymPopup = false; m_JAsymMsg.clear(); m_JointMsg = R;
+            return R;
+        }
+
+        // the mirror of a limit on the other side's bone (what a symmetric edit will give it), for its ghost
+        bool MirrorPreview(int Src, const xanimation::joint_limit& L, int& Dst, xanimation::joint_limit& Out) const
+        {
+            std::vector<std::string_view> Views(m_JNames.begin(), m_JNames.end());
+            Dst = xanimation::FindMirrorBone(Views, Src);
+            if (Dst < 0 || Dst == Src) return false;
+            const int N = int(m_JNames.size());
+            std::vector<xmath::fquat> W(N);
+            for (int i = 0; i < N; ++i) W[i] = m_JParents[i] < 0 ? m_JRest.m_Rotation[i] : W[m_JParents[i]] * m_JRest.m_Rotation[i];
+            const float Fd = xanimation::MeasureFacingDeg(xanimation::skeleton_view{ m_JParents }, Views, m_JRest) * xskeleton_joints::deg_v;
+            Out = xanimation::Mirror(L, W[Src], W[Dst], m_JRest.m_Rotation[Dst], xmath::fvec3(std::cos(Fd), 0, -std::sin(Fd)));
+            return true;
+        }
+
+        // the joints needing attention: a frame to confirm, a review to redo, outside its limit in the pose shown, an error
+        struct joint_attention { int m_Bone; std::string m_Why; bool m_bFrame; };
+        std::vector<joint_attention> JointAttention() const
+        {
+            std::vector<joint_attention> A;
+            auto* pDesc = const_cast<session*>(this)->Desc();
+            for (int b = 0; b < int(m_JNames.size()); ++b)
+            {
+                if (m_JointRes.m_Source[b].find("frame needs confirmation") != std::string::npos) A.push_back({ b, "frame to confirm", true });
+                if (pDesc) if (const auto* pO = pDesc->findJointOverride(m_JNames[b]); pO && pO->m_Review == xskeleton_desc::joint_review::NEEDS_REVIEW) A.push_back({ b, "changed since its review", false });
+                if (m_bTestPose && b < m_TestPose.count() && !xanimation::Evaluate(m_JointRes.m_Limits[b], m_TestPose.m_Rotation[b], 2e-3f).m_bInside) A.push_back({ b, "outside its limit in this pose", false });
+            }
+            return A;
+        }
+
+        // a frame change: the new frame (bone frame) of the selected joint, rotating the envelope with it or keeping it where it is
+        std::string ApplyFrame(bool bKeepEnvelope, bool bSym) noexcept
+        {
+            const int b = m_JFrameBone;
+            if (b < 0 || b >= int(m_JNames.size())) return "no frame change pending";
+            const auto& L = m_JointRes.m_Limits[b];
+            const auto& F = m_JFrameNew;
+            std::string Args = std::format("-Frame \"{} {} {} {}\"", F.m_X, F.m_Y, F.m_Z, F.m_W);
+            if (bKeepEnvelope && (L.m_Type == xanimation::joint_type::BALL || L.m_Type == xanimation::joint_type::HINGE))
+            {
+                auto Keep = xanimation::FitFromSamples(L.m_Type, L.m_Rest, F, xanimation::LimitBoundarySamples(L), 0.0f);
+                Keep.m_SwingY = L.m_SwingY; Keep.m_SwingZ = L.m_SwingZ; Keep.m_Twist = L.m_Twist;
+                Args += " " + JointSetArgs(Keep);
+            }
+            m_bJFramePending = false; m_JFrameRoll = 0;
+            return CommitJointLimit(m_JNames[b], Args, bSym);
+        }
+        // the hinge axis snapped to the bend the test pose shows at this joint (between the parent's segment and the bone's)
+        bool FrameFromPoseBend(int b, xmath::fquat& Out) const
+        {
+            if (!m_bTestPose || b < 0 || m_JParents[b] < 0) return false;
+            const int c = FirstChild(b);
+            if (c < 0) return false;
+            std::vector<xmath::fquat> R; std::vector<xmath::fvec3> P;
+            xanimation::details::WorldRP(xanimation::skeleton_view{ m_JParents }, m_TestPose, R, P);
+            const auto d1 = (P[b] - P[m_JParents[b]]).NormalizeSafeCopy(), d2 = (P[c] - P[b]).NormalizeSafeCopy();
+            const auto n = d1.Cross(d2);
+            if (n.Length() < std::sin(3.0f * xskeleton_joints::deg_v)) return false;          // not bent enough to say which way
+            const auto& L = m_JointRes.m_Limits[b];
+            const auto Xw = (R[b] * L.m_Frame) * xmath::fvec3(1, 0, 0);
+            auto Zw = n - Xw * n.Dot(Xw);
+            if (Zw.LengthSq() < 1e-8f) return false;
+            Zw = Zw.NormalizeCopy();
+            const auto Yw = Zw.Cross(Xw).NormalizeCopy();
+            Out = (R[b].ConjugateCopy() * xanimation::QuatFromBasis(Xw, Yw, Xw.Cross(Yw).NormalizeCopy())).NormalizeCopy();
+            return true;
+        }
+
+        // Include this pose: the proposal for the selected joint from the pose it is in now (its limit lifted while pulling)
+        void UpdateIncludeProposal() noexcept
+        {
+            using namespace xanimation;
+            m_bJIncludeValid = false;
+            const int b = m_JIncludeBone;
+            if (!m_bJInclude || b < 0 || b >= int(m_JNames.size()) || !m_bTestPose) return;
+            const auto& L = m_JointRes.m_Limits[b];
+            const auto  Q = m_TestPose.m_Rotation[b];
+            constexpr float Margin = 2.0f * 3.14159265f / 180.0f;
+            if (m_bJIncludeBall && L.m_Type == joint_type::HINGE)
+            {
+                auto S = LimitBoundarySamples(L, 16); S.push_back(Q);
+                m_JIncludeProposal = FitFromSamples(joint_type::BALL, L.m_Rest, L.m_Frame, S, Margin, &m_JIncludeRep);
+            }
+            else if (L.m_Type == joint_type::FREE)
+            {   // nothing yet: a ball around rest and this pose
+                const xmath::fquat Rs[2] = { L.m_Rest, Q };
+                frame_confidence C;
+                m_JIncludeProposal = FitFromSamples(joint_type::BALL, L.m_Rest, SuggestFrame(m_JParents, m_JRest, b, C), std::span<const xmath::fquat>(Rs, 2), Margin, &m_JIncludeRep);
+            }
+            else m_JIncludeProposal = ProposeExpansion(L, std::span<const xmath::fquat>(&Q, 1), Margin, &m_JIncludeRep);
+            m_bJIncludeValid = true;
+        }
+        std::string IncludeAccept(bool bSym) noexcept
+        {
+            UpdateIncludeProposal();
+            if (!m_bJIncludeValid) return "Include this pose: pull the chain first";
+            const auto R = CommitJointLimit(m_JNames[m_JIncludeBone], JointSetArgs(m_JIncludeProposal), bSym);
+            m_bJInclude = m_bJIncludeBall = false; m_JointKey.clear();
+            return R;
+        }
+
+        // the guided check of the selected joint: bend, extend, twist (parent held), then the other side; asks at the end
+        void StepCheck() noexcept
+        {
+            using namespace xanimation;
+            if (m_JCheckT < 0 || m_JCheckBone < 0 || m_JCheckBone >= int(m_JNames.size())) return;
+            m_JCheckT += std::min(ImGui::GetIO().DeltaTime, 0.1f);
+            const auto& L = m_JointRes.m_Limits[m_JCheckBone];
+            const int nAxes = L.m_Type == joint_type::HINGE ? 1 : L.m_Type == joint_type::BALL ? 3 : 0;
+            constexpr float Phase = 1.6f;
+            const int   Ph = int(m_JCheckT / Phase);
+            const float s  = std::sin((m_JCheckT - Ph * Phase) / Phase * 6.2831853f);
+            m_TestPose = m_JRest; m_bTestPose = true;
+            if (Ph < nAxes)
+            {
+                xmath::fquat J;
+                if (L.m_Type == joint_type::HINGE) { const float m = 0.5f * (L.m_HingeMin + L.m_HingeMax), h = 0.5f * (L.m_HingeMax - L.m_HingeMin); J = details::AxisAngle(details::AxZ, m + h * s); m_JCheckLabel = "bend and extend through the hinge range"; }
+                else if (Ph == 0) { J = details::MakeBall(L.m_SwingCy + (L.m_SwingY == axis_motion::LIMITED ? L.m_SwingRy : 0.0f) * s, L.m_SwingCz, L.m_TwistCentre); m_JCheckLabel = "swing along y"; }
+                else if (Ph == 1) { J = details::MakeBall(L.m_SwingCy, L.m_SwingCz + (L.m_SwingZ == axis_motion::LIMITED ? L.m_SwingRz : 0.0f) * s, L.m_TwistCentre); m_JCheckLabel = "swing along z"; }
+                else { J = details::MakeBall(L.m_SwingCy, L.m_SwingCz, L.m_TwistCentre + (L.m_Twist == axis_motion::LIMITED ? std::min(L.m_TwistHalf, 3.0f) : 0.0f) * s); m_JCheckLabel = "twist"; }
+                m_TestPose.m_Rotation[m_JCheckBone] = LocalRotation(L, J);
+                m_JCheckLabel = std::format("Checking {} ({}/{}): {}", m_JNames[m_JCheckBone], Ph + 1, nAxes + 1, m_JCheckLabel);
+            }
+            else if (Ph == nAxes) m_JCheckLabel = std::format("Checking {} ({}/{}): the other side (ghost) should mirror it", m_JNames[m_JCheckBone], nAxes + 1, nAxes + 1);
+            else { m_JCheckT = -2; m_bTestPose = false; m_JCheckLabel = std::format("Did {} look right? Mark it reviewed in the Joints panel.", m_JNames[m_JCheckBone]); }
+        }
+
+        // a limit's shape: a ball's swing ring (spokes) and twist arc, a hinge's arc; dashed while not reviewed
+        void DrawLimitShape(ImDrawList* pDraw, const ImVec2& Min, const ImVec2& Size, const joint_draw_ctx& K, const xanimation::joint_limit& L, const xanimation::joint_eval& Eval
+                           , ImU32 Base, float Thick, bool bDashed, bool bSpokes) const noexcept
+        {
+            using namespace xanimation;
+            const ImU32 Hot = IM_COL32(255, 80, 60, 255);
+            auto Line = [&](const xmath::fvec3& A, const xmath::fvec3& B, ImU32 Col, float T) { ImVec2 a, bb; if (ProjectView(A, Min, Size, a) && ProjectView(B, Min, Size, bb)) pDraw->AddLine(a, bb, Col, T); };
+            auto Poly = [&](const std::vector<xmath::fvec3>& Pts, ImU32 Col, bool bLoop)
+            {
+                const int n = int(Pts.size());
+                for (int i = 0; i + 1 < n + (bLoop ? 1 : 0); ++i) if (!bDashed || (i & 1) == 0) Line(Pts[i], Pts[(i + 1) % n], Col, Thick);
+            };
+            if (L.m_Type == joint_type::BALL)
+            {
+                std::vector<xmath::fvec3> Ring;
+                for (int k = 0; k < 48; ++k) { float Sy, Sz; SwingBoundary(L, k * 6.2831853f / 48, Sy, Sz); Ring.push_back(ConePoint(K, Sy, Sz)); }
+                const ImU32 Col = (Eval.m_Faces & joint_face::SWING) ? Hot : Base;
+                Poly(Ring, Col, true);
+                if (bSpokes) for (int k = 0; k < 48; k += 12) Line(K.P0, Ring[k], Col, 1.0f);
+                if (L.m_Twist == axis_motion::LIMITED && L.m_TwistHalf < 3.14f)
+                {
+                    std::vector<xmath::fvec3> Arc;
+                    for (int k = 0; k <= 16; ++k) Arc.push_back(TwistPoint(K, L.m_TwistCentre - L.m_TwistHalf + 2 * L.m_TwistHalf * k / 16));
+                    Poly(Arc, (Eval.m_Faces & joint_face::TWIST) ? Hot : Base, false);
+                }
+            }
+            else if (L.m_Type == joint_type::HINGE)
+            {
+                std::vector<xmath::fvec3> Arc;
+                for (int k = 0; k <= 32; ++k) Arc.push_back(HingePoint(K, L.m_HingeMin + (L.m_HingeMax - L.m_HingeMin) * k / 32));
+                Poly(Arc, Base, false);
+                Line(K.P0, Arc.front(), (Eval.m_Faces & joint_face::HINGE_LOW) ? Hot : Base, std::max(1.0f, Thick - 0.5f));
+                Line(K.P0, Arc.back(),  (Eval.m_Faces & joint_face::HINGE_HIGH) ? Hot : Base, std::max(1.0f, Thick - 0.5f));
+            }
+        }
+
+        // a joint's state as a tag (not colour alone): R reviewed, * changed since review, ? frame to confirm, ! outside its limit
+        std::string JointTag(int b, const xanimation::joint_eval& Eval) const
+        {
+            auto* pDesc = const_cast<session*>(this)->Desc();
+            std::string T;
+            if (pDesc) if (const auto* pO = pDesc->findJointOverride(m_JNames[b]); pO)
+            {
+                if (pO->m_Review == xskeleton_desc::joint_review::REVIEWED) T += "R";
+                if (pO->m_Review == xskeleton_desc::joint_review::NEEDS_REVIEW) T += "*";
+            }
+            if (m_JointRes.m_Source[b].find("frame needs confirmation") != std::string::npos) T += "?";
+            if (!Eval.m_bInside) T += "!";
+            return T;
+        }
+
         void DrawJointOverlay(const ImVec2& Min, const ImVec2& Size, float Scale, const ImVec2& Mouse) noexcept
         {
             using namespace xanimation;
             auto* pDraw = ImGui::GetWindowDrawList();
             if (!UpdateJoints() || m_Scaled.size() != m_JNames.size() || m_CurR.size() != m_JNames.size()) return;
+            StepCheck();
             auto Text = [&](ImVec2 P, ImU32 Col, const std::string& S)       // text on a dark backing: readable over the floor and the bones
             {
                 const ImVec2 Sz = ImGui::CalcTextSize(S.c_str());
                 pDraw->AddRectFilled(ImVec2(P.x - 3, P.y - 2), ImVec2(P.x + Sz.x + 3, P.y + Sz.y + 2), IM_COL32(20, 20, 20, 190), 3.0f);
                 pDraw->AddText(P, Col, S.c_str());
             };
-            const auto Status = std::format("Joints - limits {} - {}{}", Desc()->m_JointLimits == xskeleton_desc::joint_limits_mode::ON ? "on" : "off (preview)"
-                                           , m_bTestPose ? "preview pose, not saved (Reset pose in the Joints panel)" : "drag the orange handle to test", m_bPulling ? "" : "");
+            const auto Status = std::format("Joints - limits {} - {}", Desc()->m_JointLimits == xskeleton_desc::joint_limits_mode::ON ? "on" : "off (preview)"
+                                           , m_bJInclude ? "INCLUDE THIS POSE: pull the chain; only this joint's limit is lifted (Include / Cancel in the panel)"
+                                           : m_bTestPose ? "preview pose, not saved (Reset pose in the Joints panel)" : "drag a handle to edit, the orange one to test");
             Text(ImVec2(Min.x + 8, Min.y + 8), IM_COL32(255, 230, 150, 255), Status);
+            if (m_JCheckT != -1 && !m_JCheckLabel.empty()) Text(ImVec2(Min.x + 8, Min.y + 30), IM_COL32(170, 230, 255, 255), m_JCheckLabel);
 
             const int b = SelectedJoint();
-            m_bPullHover = false;
+            auto* pDesc = Desc();
+            auto Reviewed = [&](int j) { const auto* pO = pDesc->findJointOverride(m_JNames[j]); return pO && pO->m_Review == xskeleton_desc::joint_review::REVIEWED; };
+            auto LocalOf  = [&](int j) { return m_bTestPose && j < m_TestPose.count() ? m_TestPose.m_Rotation[j] : m_JRest.m_Rotation[j]; };
+
+            // the filter: other joints drawn thin, no handles (Selected: only the selected joint)
+            if (m_JFilter != joint_filter::SELECTED)
+            {
+                std::vector<std::uint8_t> Show(m_JNames.size(), 0);
+                if (m_JFilter == joint_filter::ALL) std::fill(Show.begin(), Show.end(), std::uint8_t(1));
+                else if (m_JFilter == joint_filter::ATTENTION) for (const auto& A : JointAttention()) Show[A.m_Bone] = 1;
+                else if (b >= 0)
+                {
+                    for (int a = m_JParents[b]; a >= 0; a = m_JParents[a]) Show[a] = 1;
+                    for (int a = FirstChild(b); a >= 0; a = FirstChild(a)) Show[a] = 1;
+                }
+                int nDrawn = 0;
+                for (int j = 0; j < int(m_JNames.size()) && nDrawn < 200; ++j)
+                {
+                    if (!Show[j] || j == b || m_JointRes.m_Limits[j].m_Type == joint_type::FREE) continue;
+                    const auto& L = m_JointRes.m_Limits[j];
+                    const auto  Ev = Evaluate(L, LocalOf(j), 2e-3f);
+                    DrawLimitShape(pDraw, Min, Size, JointCtx(j, L, LocalOf(j)), L, Ev, IM_COL32(150, 170, 200, 170), 1.0f, !Reviewed(j), false);
+                    if (const auto Tag = JointTag(j, Ev); !Tag.empty()) { ImVec2 S; if (ProjectView(m_Scaled[j].m_Position, Min, Size, S)) Text(ImVec2(S.x + 6, S.y - 16), IM_COL32(255, 220, 120, 255), Tag); }
+                    ++nDrawn;
+                }
+            }
+
+            m_bPullHover = false; m_JHandleHover = -1; m_JHandles.clear();
             if (b < 0) { m_PullEff = -1; return; }
-            const auto& L = m_JointRes.m_Limits[b];
-            const auto  Local = m_bTestPose ? m_TestPose.m_Rotation[b] : m_JRest.m_Rotation[b];
-            const auto  Eval  = Evaluate(L, Local, 2e-3f);
-            const int   c     = FirstChild(b);
-            const auto  P0    = m_Scaled[b].m_Position;
-            float Len = c >= 0 ? (m_Scaled[c].m_Position - P0).Length() : 0;
-            Len = std::max(Len, 0.03f * m_Scene.m_Radius);
-            const auto ParentR = m_JParents[b] >= 0 ? m_CurR[m_JParents[b]] : xmath::fquat::fromIdentity();
-            const auto Ap = (ParentR * L.m_Rest * L.m_Frame).NormalizeCopy();
-            const xmath::fvec3 X(1, 0, 0), Y(0, 1, 0), Z(0, 0, 1);
+            const auto  Local = LocalOf(b);
+            const bool  bReviewed = Reviewed(b);
+            const ImU32 Base = bReviewed ? IM_COL32(120, 230, 140, 255) : IM_COL32(120, 190, 255, 255);
 
-            const xskeleton_desc::joint_override* pO = nullptr;
-            for (const auto& O : Desc()->m_JointOverrides) if (O.m_BoneName == m_JNames[b]) pO = &O;
-            const bool bReviewed = pO && pO->m_Review == xskeleton_desc::joint_review::REVIEWED;
-            const ImU32 Base = bReviewed ? IM_COL32(120, 230, 140, 255) : IM_COL32(120, 190, 255, 255), Hot = IM_COL32(255, 80, 60, 255);
-            auto Line = [&](const xmath::fvec3& A, const xmath::fvec3& B, ImU32 Col, float T = 2.0f)
-            {
-                ImVec2 a, bb; if (ProjectView(A, Min, Size, a) && ProjectView(B, Min, Size, bb)) pDraw->AddLine(a, bb, Col, T);
-            };
-            // a polyline, dashed while the joint is not reviewed (inferred values look provisional)
-            auto Poly = [&](const std::vector<xmath::fvec3>& Pts, ImU32 Col, bool bLoop)
-            {
-                const int n = int(Pts.size());
-                for (int i = 0; i + 1 < n + (bLoop ? 1 : 0); ++i)
-                    if (bReviewed || (i & 1) == 0) Line(Pts[i], Pts[(i + 1) % n], Col);
-            };
+            // the limit shown: the drag's preview, the Include proposal (over the old one, dimmed), a pending frame, or the resolved limit
+            if (m_bJInclude && m_JIncludeBone == b) UpdateIncludeProposal();
+            const auto& Resolved = m_JointRes.m_Limits[b];
+            xanimation::joint_limit L = m_JDrag >= 0 ? m_JPreview : (m_bJInclude && m_bJIncludeValid && m_JIncludeBone == b) ? m_JIncludeProposal : Resolved;
+            const auto  K    = JointCtx(b, L, Local);
+            const auto  Eval = Evaluate(L, Local, 2e-3f);
+            if (L.m_Type != Resolved.m_Type || m_JDrag >= 0 || (m_bJInclude && m_JIncludeBone == b))
+                DrawLimitShape(pDraw, Min, Size, JointCtx(b, Resolved, Local), Resolved, Evaluate(Resolved, Local, 2e-3f), IM_COL32(160, 160, 160, 150), 1.0f, true, false);   // the old one
+            DrawLimitShape(pDraw, Min, Size, K, L, Eval, m_bJInclude ? IM_COL32(255, 210, 90, 255) : Base, 2.0f, !bReviewed && m_JDrag < 0, true);
+            if (m_bJFramePending && m_JFrameBone == b)
+            {   // the pending frame: the envelope rotated with it (solid orange) and kept where it is (dotted cyan)
+                auto Rot = Resolved; Rot.m_Frame = m_JFrameNew;
+                DrawLimitShape(pDraw, Min, Size, JointCtx(b, Rot, Local), Rot, Evaluate(Rot, Local, 2e-3f), IM_COL32(255, 150, 60, 230), 1.5f, false, false);
+                auto Keep = FitFromSamples(Resolved.m_Type == joint_type::HINGE ? joint_type::HINGE : joint_type::BALL, Resolved.m_Rest, m_JFrameNew, LimitBoundarySamples(Resolved), 0.0f);
+                DrawLimitShape(pDraw, Min, Size, JointCtx(b, Keep, Local), Keep, Evaluate(Keep, Local, 2e-3f), IM_COL32(90, 220, 255, 230), 1.5f, true, false);
+            }
 
-            if (L.m_Type == joint_type::BALL)
+            // the frame's axes: x the long axis (red), y (green), z the hinge axis (blue)
             {
-                std::vector<xmath::fvec3> Ring;
-                for (int k = 0; k < 48; ++k)
+                const auto& Fq = (m_bJFramePending && m_JFrameBone == b) ? m_JFrameNew : L.m_Frame;
+                const auto ParentR = m_JParents[b] >= 0 ? m_CurR[m_JParents[b]] : xmath::fquat::fromIdentity();
+                const auto Ap = (ParentR * L.m_Rest * Fq).NormalizeCopy();
+                const xmath::fvec3 Ax[3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
+                const ImU32 Cols[3] = { IM_COL32(230, 70, 70, 220), IM_COL32(80, 220, 80, 220), IM_COL32(80, 130, 255, 220) };
+                for (int i = 0; i < 3; ++i) { ImVec2 a, e; if (ProjectView(K.P0, Min, Size, a) && ProjectView(K.P0 + (Ap * Ax[i]) * (K.Len * 0.35f), Min, Size, e)) pDraw->AddLine(a, e, Cols[i], 2.0f); }
+            }
+
+            // the other side's ghost while symmetry would change it (a handle drag, Include, the check's last step)
+            std::vector<std::string_view> Views(m_JNames.begin(), m_JNames.end());
+            const int Other = FindMirrorBone(Views, b);
+            const bool bSym = m_bJointSymmetry && Other >= 0 && Other != b;
+            if (bSym && (m_JDrag >= 0 || m_bJInclude || m_JCheckT >= 0))
+            {
+                int Dst = -1; xanimation::joint_limit M;
+                if (MirrorPreview(b, L, Dst, M) && Dst >= 0 && Dst < int(m_Scaled.size()))
                 {
-                    float Sy, Sz; SwingBoundary(L, k * 6.2831853f / 48, Sy, Sz);
-                    Ring.push_back(P0 + (Ap * (details::MakeBall(Sy, Sz, 0) * X)) * (Len * 0.9f));
-                }
-                const ImU32 Col = (Eval.m_Faces & joint_face::SWING) ? Hot : Base;
-                Poly(Ring, Col, true);
-                for (int k = 0; k < 48; k += 12) Line(P0, Ring[k], Col, 1.0f);
-                if (L.m_Twist == axis_motion::LIMITED && L.m_TwistHalf < 3.14f)
-                {
-                    float Sy, Sz, T; bool Sing; details::SplitBall(JointRotation(L, Local), Sy, Sz, T, Sing);
-                    const auto Sw = Ap * details::ExpV(xmath::fvec3(0, Sy, Sz));
-                    const auto Dir = Sw * X, Ref = Sw * Y, C = P0 + Dir * (Len * 0.6f);
-                    std::vector<xmath::fvec3> Arc;
-                    for (int k = 0; k <= 16; ++k)
-                    {
-                        const float t = L.m_TwistCentre - L.m_TwistHalf + 2 * L.m_TwistHalf * k / 16;
-                        Arc.push_back(C + (details::AxisAngle(Dir, t) * Ref) * (Len * 0.18f));
-                    }
-                    Poly(Arc, (Eval.m_Faces & joint_face::TWIST) ? Hot : Base, false);
-                    Line(C, C + (details::AxisAngle(Dir, T) * Ref) * (Len * 0.22f), IM_COL32(255, 220, 80, 255));
+                    DrawLimitShape(pDraw, Min, Size, JointCtx(Dst, M, LocalOf(Dst)), M, Evaluate(M, LocalOf(Dst), 2e-3f), IM_COL32(220, 160, 255, 200), 1.5f, true, false);
+                    ImVec2 S; if (ProjectView(m_Scaled[Dst].m_Position, Min, Size, S)) Text(ImVec2(S.x + 8, S.y + 8), IM_COL32(220, 180, 255, 255), std::format("{} (mirrored)", m_JNames[Dst]));
                 }
             }
-            else if (L.m_Type == joint_type::HINGE)
-            {
-                std::vector<xmath::fvec3> Arc;
-                for (int k = 0; k <= 32; ++k)
-                {
-                    const float a = L.m_HingeMin + (L.m_HingeMax - L.m_HingeMin) * k / 32;
-                    Arc.push_back(P0 + (Ap * (details::AxisAngle(Z, a) * X)) * (Len * 0.9f));
-                }
-                Poly(Arc, Base, false);
-                Line(P0, Arc.front(), (Eval.m_Faces & joint_face::HINGE_LOW) ? Hot : Base, 1.5f);
-                Line(P0, Arc.back(),  (Eval.m_Faces & joint_face::HINGE_HIGH) ? Hot : Base, 1.5f);
-            }
+
             // where the bone points now
-            const auto Now = (m_CurR[b] * L.m_Frame) * X;
-            Line(P0, P0 + Now * Len, Eval.m_bInside ? IM_COL32(255, 220, 80, 255) : Hot, 2.5f);
+            {
+                const auto Now = (m_CurR[b] * L.m_Frame) * xmath::fvec3(1, 0, 0);
+                ImVec2 a, e; if (ProjectView(K.P0, Min, Size, a) && ProjectView(K.P0 + Now * K.Len, Min, Size, e)) pDraw->AddLine(a, e, Eval.m_bInside ? IM_COL32(255, 220, 80, 255) : IM_COL32(255, 80, 60, 255), 2.5f);
+            }
 
-            {   // the label: what is allowed, where it came from, and its review
-                ImVec2 S;
-                if (ProjectView(P0, Min, Size, S))
+            // the handles (not while pulling, checking or including)
+            const bool bHandles = !m_bPulling && m_JCheckT < 0 && !m_bJInclude && !(m_bJFramePending && m_JFrameBone == b);
+            if (bHandles)
+                for (int k = 0; k < JH_COUNT; ++k)
                 {
-                    const auto Txt = std::format("{}  {}\n{}{}", m_JNames[b], xskeleton_joints::Describe(L), m_JointRes.m_Source[b]
-                                                , Eval.m_bInside ? "" : std::format("  - outside by {:.1f} deg", Eval.m_Excess * 57.29578f));
+                    if (!HandleUsed(L, k)) continue;
+                    ImVec2 S; if (!ProjectView(HandlePoint(K, L, k), Min, Size, S)) continue;
+                    m_JHandles.push_back({ k, S });
+                    const float dx = Mouse.x - S.x, dy = Mouse.y - S.y;
+                    const bool bHot = m_JDrag == k || (m_JDrag < 0 && dx * dx + dy * dy < 64.0f);
+                    if (bHot && m_JDrag < 0) m_JHandleHover = k;
+                    const float R = bHot ? 6.0f : 4.5f;
+                    if (k == JH_CENTRE) pDraw->AddRectFilled(ImVec2(S.x - R, S.y - R), ImVec2(S.x + R, S.y + R), bHot ? IM_COL32(255, 255, 255, 255) : IM_COL32(240, 240, 240, 220));
+                    else pDraw->AddCircleFilled(S, R, bHot ? IM_COL32(255, 255, 255, 255) : IM_COL32(240, 240, 240, 220));
+                    pDraw->AddCircle(S, R, IM_COL32(20, 20, 20, 255), 0, 1.5f);
+                    if (bHot && m_JDrag < 0) Text(ImVec2(S.x + 10, S.y - 18), IM_COL32(255, 255, 255, 255), std::format("{}{}", JHName(k), k <= JH_RZ_N ? " (Shift: both)" : ""));
+                }
+
+            // the handle drag: preview while held, Esc cancels, release commits one JointSet
+            if (m_JDrag >= 0)
+            {
+                if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { m_JDrag = -1; m_JDragTip.clear(); m_JointMsg = "drag cancelled: nothing changed"; }
+                else if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
+                {
+                    DragHandle(JointCtx(b, m_JDragStart, Local), Min, Size, Mouse);
+                    Text(ImVec2(Mouse.x + 16, Mouse.y + 12), IM_COL32(255, 255, 255, 255), m_JDragTip + (bSym ? std::format("\nalso {} (mirrored)", m_JNames[Other]) : ""));
+                }
+                else
+                {
+                    float q0[2], q1[2];
+                    const int n = HandleParams(m_JDragStart, m_JDrag, false, q0); HandleParams(m_JPreview, m_JDrag, false, q1);
+                    const bool bChanged = std::abs(q1[0] - q0[0]) > 1e-5f || (n == 2 && std::abs(q1[1] - q0[1]) > 1e-5f) || (m_JDragShift && std::abs(m_JPreview.m_SwingRz - m_JDragStart.m_SwingRz) > 1e-5f);
+                    m_JDrag = -1;
+                    if (bChanged) CommitJointLimit(m_JNames[b], JointSetArgs(m_JPreview), bSym);
+                }
+            }
+
+            // the asymmetric pair: never overwritten without a choice
+            if (m_bJAsymPopup) ImGui::OpenPopup("Asymmetric pair##joints");
+            if (ImGui::BeginPopupModal("Asymmetric pair##joints", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+            {
+                if (!m_bJAsymPopup) ImGui::CloseCurrentPopup();         // answered elsewhere (the JointsView command): the modal must not stay and block the view
+                ImGui::TextWrapped("%s", m_JAsymMsg.c_str());
+                if (ImGui::Button("Overwrite the other side")) { ResolveAsym(0); ImGui::CloseCurrentPopup(); }
+                if (!m_JAsymArgs.empty()) { ImGui::SameLine(); if (ImGui::Button("This side only")) { ResolveAsym(1); ImGui::CloseCurrentPopup(); } }
+                ImGui::SameLine(); if (ImGui::Button("Cancel")) { ResolveAsym(2); ImGui::CloseCurrentPopup(); }
+                ImGui::EndPopup();
+            }
+
+            {   // the label: what is allowed, where it came from, its state
+                ImVec2 S;
+                if (ProjectView(K.P0, Min, Size, S))
+                {
+                    const auto Tag = JointTag(b, Eval);
+                    auto Txt = std::format("{}  {}{}\n{}{}", m_JNames[b], xskeleton_joints::Describe(L), Tag.empty() ? "" : "  [" + Tag + "]", m_JointRes.m_Source[b]
+                                          , Eval.m_bInside ? "" : std::format("  - outside by {:.1f} deg", Eval.m_Excess * 57.29578f));
+                    if (m_bJInclude && m_bJIncludeValid && m_JIncludeBone == b)
+                        Txt += std::format("\nInclude: {}{}", xskeleton_joints::Describe(m_JIncludeProposal)
+                                          , m_JIncludeRep.m_nOffModel ? "\nthis pose needs another axis: 'Make it a ball' in the panel" : "");
                     Text(ImVec2(S.x + 10, S.y + 10), IM_COL32(255, 255, 255, 240), Txt);
                 }
             }
 
             // the test pull: the handle at the end of the selected bone (its first child)
+            const int c = FirstChild(b);
             m_PullEff = c;
-            if (c < 0) return;
+            if (c < 0 || m_JCheckT >= 0) return;
             ImVec2 Hs;
             if (!ProjectView(m_Scaled[c].m_Position, Min, Size, Hs)) return;
             const float dx = Mouse.x - Hs.x, dy = Mouse.y - Hs.y;
-            m_bPullHover = !m_bPulling && dx * dx + dy * dy < 100.0f;
+            m_bPullHover = !m_bPulling && m_JHandleHover < 0 && m_JDrag < 0 && dx * dx + dy * dy < 100.0f;
             m_HandleScreen = Hs;
             pDraw->AddCircleFilled(Hs, m_bPullHover || m_bPulling ? 8.0f : 6.0f, IM_COL32(255, 150, 40, 255));
 
@@ -1625,7 +2147,7 @@ namespace xskeleton_editor
                     m_bTestPose = true;
                     m_PullNote = std::format("{} {}", m_PullRep.m_Status == ik_status::REACHED ? "reached" : std::format("missed by {:.1f} cm:", m_PullRep.m_PosMiss * 100.0f), m_PullRep.m_Status == ik_status::REACHED ? "" : PullReason(m_PullRep, W));
                 }
-                else m_bPulling = false;
+                else { m_bPulling = false; m_Ik.Setup(m_JParents, m_JointRes.m_Limits); }
             }
             if (m_bTestPose && !m_PullNote.empty())
             {
@@ -1652,21 +2174,48 @@ namespace xskeleton_editor
             if (ImGui::Checkbox("Joints mode", &m_bJointsMode))
             {
                 if (m_bJointsMode) m_Settings.m_Pose = pose_mode::FROZEN;       // limits are measured from the rest (frozen) pose
-                else { m_bTestPose = m_bPulling = false; m_PullNote.clear(); }
+                else { m_bTestPose = m_bPulling = m_bJInclude = m_bJFramePending = false; m_JCheckT = -1; m_PullNote.clear(); }
             }
-            if (ImGui::IsItemHovered()) xeditor::hint::Text("Shows the selected joint's allowed range on the bone and lets you pull its end to test it. The test pose is never saved.");
+            if (ImGui::IsItemHovered()) xeditor::hint::Text("Shows the selected joint's allowed range on the bone: drag its handles to change it, pull the orange handle to test it. The test pose is never saved.");
             auto* pDesc = Desc();
             if (!pDesc || !UpdateJoints()) { ImGui::TextDisabled("Compile the skeleton to see its joints."); return; }
 
             const bool bOn = pDesc->m_JointLimits == xskeleton_desc::joint_limits_mode::ON;
-            int nReviewed = 0, nNeedsReview = 0;
-            for (const auto& O : pDesc->m_JointOverrides) { nReviewed += O.m_Review == xskeleton_desc::joint_review::REVIEWED; nNeedsReview += O.m_Review == xskeleton_desc::joint_review::NEEDS_REVIEW; }
+            int nReviewed = 0;
+            for (const auto& O : pDesc->m_JointOverrides) nReviewed += O.m_Review == xskeleton_desc::joint_review::REVIEWED;
             ImGui::Text("Limits: %s", bOn ? "On" : "Off (what you see is a preview)");
             ImGui::SameLine();
             if (ImGui::SmallButton(bOn ? "Turn off" : "Turn on")) JointCommand(std::format("JointLimits -Mode {}", bOn ? "Off" : "On"));
             ImGui::Text("Preset %d   Overrides %d   Reviewed %d", m_JointRes.m_nPreset, m_JointRes.m_nOverride, nReviewed);
-            const int nAttention = nNeedsReview + m_JointRes.m_nNeedFrame + int(m_JointRes.m_Errors.size());
-            if (nAttention) ImGui::TextColored(ImVec4(1, 0.75f, 0.3f, 1), "Needs attention %d (%d frames to confirm, %d to review again, %d errors)", nAttention, m_JointRes.m_nNeedFrame, nNeedsReview, int(m_JointRes.m_Errors.size()));
+            static constexpr const char* Filters[] = { "Selected", "Chain", "Needs attention", "All" };
+            int F = int(m_JFilter);
+            ImGui::SetNextItemWidth(160);
+            if (ImGui::Combo("Show", &F, Filters, 4)) m_JFilter = joint_filter(F);
+            if (ImGui::IsItemHovered()) xeditor::hint::Text("Which joints draw their range: the selected one only, its chain, the ones that need attention, or all. Tags: R reviewed, * changed since its review, ? frame to confirm, ! outside its limit.");
+
+            // the joints that need attention: click to select; a frame can be confirmed from here
+            const auto Att = JointAttention();
+            if (!m_JointRes.m_Errors.empty()) for (const auto& E : m_JointRes.m_Errors) ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "%s", E.c_str());
+            if (!Att.empty() && ImGui::CollapsingHeader(std::format("Needs attention ({})###att", Att.size()).c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                for (std::size_t i = 0; i < Att.size(); ++i)
+                {
+                    ImGui::PushID(int(i));
+                    if (ImGui::Selectable(std::format("{}  - {}", m_JNames[Att[i].m_Bone], Att[i].m_Why).c_str(), SelectedJoint() == Att[i].m_Bone, 0, ImVec2(ImGui::GetContentRegionAvail().x - 70, 0)))
+                    { m_Selected = { Att[i].m_Bone }; m_iScrollTo = Att[i].m_Bone; }
+                    if (Att[i].m_bFrame)
+                    {
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Confirm"))
+                        {
+                            const auto& Fq = m_JointRes.m_Limits[Att[i].m_Bone].m_Frame;
+                            JointCommand(std::format("JointSet -Bone {} -Frame \"{} {} {} {}\"", xeditor::Quote(m_JNames[Att[i].m_Bone]), Fq.m_X, Fq.m_Y, Fq.m_Z, Fq.m_W));
+                        }
+                        if (ImGui::IsItemHovered()) xeditor::hint::Text("The frame drawn (x red along the bone, z blue the hinge axis) is right: keep it as is.");
+                    }
+                    ImGui::PopID();
+                }
+            }
             if (m_bTestPose)
             {
                 ImGui::TextColored(ImVec4(1, 0.85f, 0.5f, 1), "Preview pose - not saved");
@@ -1725,11 +2274,79 @@ namespace xskeleton_editor
                 ImGui::SetNextItemWidth(90); bAx |= ImGui::Combo("Swing y, z, twist", &A[2], Axes, 3);
                 if (bAx) JointCommand(std::format("JointSet -Bone {} -Axes \"{} {} {}\"{}", xeditor::Quote(Name), Axes[A[0]], Axes[A[1]], Axes[A[2]], Mir));
             }
-            if (ImGui::Button("Mark reviewed")) JointCommand(std::format("JointReview -Bone {}{} -By User", xeditor::Quote(Name), Mir));
-            if (ImGui::IsItemHovered()) xeditor::hint::Text("You looked at this joint (bend it, twist it, check the other side): its values are recorded as reviewed. A later change asks for a review again.");
-            ImGui::SameLine();
+
+            // Include this pose
+            ImGui::Separator();
+            if (!m_bJInclude || m_JIncludeBone != b)
+            {
+                if (ImGui::Button("Include a pose...")) { m_bJInclude = true; m_bJIncludeBall = false; m_JIncludeBone = b; m_bTestPose = false; m_PullNote.clear(); }
+                if (ImGui::IsItemHovered()) xeditor::hint::Text("Pull the chain (orange handle) into the pose this joint should allow: only this joint's limit is lifted. The limit then grows just enough to include it; Include or Cancel.");
+            }
+            else
+            {
+                ImGui::TextColored(ImVec4(1, 0.85f, 0.4f, 1), "Include a pose: pull the orange handle");
+                if (m_bJIncludeValid)
+                {
+                    ImGui::TextWrapped("Proposed: %s", xskeleton_joints::Describe(m_JIncludeProposal).c_str());
+                    if (m_JIncludeRep.m_nOffModel && L.m_Type == joint_type::HINGE && !m_bJIncludeBall)
+                    {
+                        ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "This pose bends sideways: a hinge cannot hold it.");
+                        if (ImGui::SmallButton("Make it a ball")) m_bJIncludeBall = true;
+                        if (ImGui::IsItemHovered()) xeditor::hint::Text("A separate, explicit change: the joint becomes a ball (swing in two axes and twist) fitted to its hinge range and this pose.");
+                    }
+                }
+                ImGui::BeginDisabled(!m_bJIncludeValid);
+                if (ImGui::Button("Include")) IncludeAccept(bSym);
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel##include")) { m_bJInclude = m_bJIncludeBall = false; m_bTestPose = false; m_PullNote.clear(); m_JointKey.clear(); }
+            }
+
+            // the frame
+            ImGui::Separator();
+            {
+                const bool bNeedsFrame = m_JointRes.m_Source[b].find("frame needs confirmation") != std::string::npos;
+                ImGui::Text("Frame: %s", bNeedsFrame ? "needs confirmation" : (pO && pO->m_bFrameSet) ? "confirmed" : "suggested");
+                if (ImGui::IsItemHovered()) xeditor::hint::Text("x (red) runs along the bone, z (blue) is the axis a hinge bends about. If they look wrong, roll the frame or snap it to a bent test pose.");
+                if (bNeedsFrame) { ImGui::SameLine(); if (ImGui::SmallButton("Confirm frame")) { const auto& Fq = L.m_Frame; JointCommand(std::format("JointSet -Bone {} -Frame \"{} {} {} {}\"{}", xeditor::Quote(Name), Fq.m_X, Fq.m_Y, Fq.m_Z, Fq.m_W, Mir)); } }
+                ImGui::SetNextItemWidth(160);
+                if (ImGui::DragFloat("Roll frame (deg)", &m_JFrameRoll, 0.5f, -180, 180, "%.1f"))
+                { m_bJFramePending = true; m_JFrameBone = b; m_JFrameNew = (L.m_Frame * details::AxisAngle(details::AxX, m_JFrameRoll / D)).NormalizeCopy(); }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Snap to the pose's bend"))
+                {
+                    xmath::fquat Fq;
+                    if (FrameFromPoseBend(b, Fq)) { m_bJFramePending = true; m_JFrameBone = b; m_JFrameNew = Fq; m_JointMsg.clear(); }
+                    else m_JointMsg = "Snap to the pose's bend: pull the chain so this joint is clearly bent first (more than 3 degrees)";
+                }
+                if (ImGui::IsItemHovered()) xeditor::hint::Text("Bend this joint with a test pull, then snap: the hinge axis (z) becomes the axis the pose bends about.");
+                if (m_bJFramePending && m_JFrameBone == b)
+                {
+                    ImGui::TextWrapped("New frame: the orange outline turns the range with the frame, the dotted cyan one keeps the range where it is.");
+                    if (ImGui::Button("Turn the range with it")) ApplyFrame(false, bSym);
+                    ImGui::SameLine(); if (ImGui::Button("Keep the range")) ApplyFrame(true, bSym);
+                    ImGui::SameLine(); if (ImGui::Button("Cancel##frame")) { m_bJFramePending = false; m_JFrameRoll = 0; }
+                }
+            }
+
+            // review
+            ImGui::Separator();
+            if (m_JCheckT == -2 && m_JCheckBone == b)
+            {
+                ImGui::TextColored(ImVec4(0.6f, 0.9f, 1, 1), "Did it look right?");
+                if (ImGui::Button("Yes - mark reviewed")) { JointCommand(std::format("JointReview -Bone {}{} -By User", xeditor::Quote(Name), Mir)); m_JCheckT = -1; m_JCheckLabel.clear(); }
+                ImGui::SameLine(); if (ImGui::Button("Not yet")) { m_JCheckT = -1; m_JCheckLabel.clear(); }
+            }
+            else
+            {
+                if (ImGui::Button(m_JCheckT >= 0 ? "Checking..." : "Check this joint")) { if (m_JCheckT < 0) { m_JCheckT = 0; m_JCheckBone = b; } }
+                if (ImGui::IsItemHovered()) xeditor::hint::Text("Moves the joint through its whole range (parent held): bend, extend, twist, then shows the other side; then asks.");
+                ImGui::SameLine();
+                if (ImGui::Button("Mark reviewed")) JointCommand(std::format("JointReview -Bone {}{} -By User", xeditor::Quote(Name), Mir));
+                if (ImGui::IsItemHovered()) xeditor::hint::Text("You looked at this joint (bend it, twist it, check the other side): its values are recorded as reviewed. A later change asks for a review again.");
+            }
             if (ImGui::Button("Reset to Auto")) JointCommand(std::format("JointReset -Bone {}{}", xeditor::Quote(Name), Mir));
-            if (Other >= 0 && Other != b) { ImGui::SameLine(); if (ImGui::Button("Mirror to other side")) JointCommand(std::format("JointMirror -Bone {}", xeditor::Quote(Name))); }
+            if (Other >= 0 && Other != b) { ImGui::SameLine(); if (ImGui::Button("Mirror to other side")) MirrorJoint(Name); }
             if (!m_JointMsg.empty()) ImGui::TextWrapped("%s", m_JointMsg.c_str());
         }
 
