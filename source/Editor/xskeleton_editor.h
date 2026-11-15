@@ -16,6 +16,11 @@
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_thumbnail.h"
 #include "plugins/xskeleton.plugin/source/xskeleton_descriptor.h"
 #include "plugins/xskeleton.plugin/source/xskeleton_joints.h"
+#include "plugins/xskeleton.plugin/source/xskeleton_joint_evidence.h"
+#include <filesystem>
+#include <array>
+#include <set>
+#include <tuple>
 
 #include <charconv>
 #include <functional>
@@ -375,7 +380,7 @@ namespace xskeleton_editor
         // (with its mirror and its review invalidation) is one undo step; a no-op leaves none; editing never marks a joint reviewed.
         struct joint_cmd : xundo::query_command_base
         {
-            enum class kind { info, set, reset, mirror, review, mode, view };
+            enum class kind { info, set, reset, mirror, review, mode, view, analyze, apply };
             session& m_Session; kind m_Kind; const char* m_pHelp;
             joint_cmd(xundo::system& System, session& Session, kind Kind, const char* pName, const char* pHelp) noexcept
                 : query_command_base(System, pName, nullptr), m_Session(Session), m_Kind(Kind), m_pHelp(pHelp) { RegisterArguments(); }
@@ -410,12 +415,18 @@ namespace xskeleton_editor
                 case kind::reset:  m_hBone = m_Parser.addOption("Bone", "The bone", true, 1); m_hMirror = m_Parser.addOption("Mirror", "1: the other side too", false, 1); break;
                 case kind::mirror: m_hBone = m_Parser.addOption("Bone", "The bone whose limit goes to the other side", true, 1); m_hForce = m_Parser.addOption("Force", "1: overwrite a reviewed other side that differs", false, 1); break;
                 case kind::review: m_hBone = m_Parser.addOption("Bone", "The bone", true, 1); m_hMirror = m_Parser.addOption("Mirror", "1: the other side too", false, 1); m_hG = m_Parser.addOption("By", "User: the Mark reviewed button (default: the console)", false, 1); break;
+                case kind::analyze:
+                    m_hA = m_Parser.addOption("Packages", "Package guids (hex, space separated) to use; default: every package on this skeleton", false, 1);
+                    m_hB = m_Parser.addOption("IncludeReviewed", "1: reviewed joints may grow too (default: protected)", false, 1);
+                    m_hBone = m_Parser.addOption("ShowWorst", "A bone of the proposal: its worst frame becomes the test pose", false, 1);
+                    break;
+                case kind::apply:  m_hA = m_Parser.addOption("Bones", "The proposal's bones to apply (space separated); default: every selected row", false, 1); break;
                 }
             }
             std::string Query() noexcept override { return m_Session.RunJoint(*this); }
             xcmdline::parser::handle m_hBone, m_hA, m_hB, m_hC, m_hD, m_hE, m_hF, m_hG, m_hMirror, m_hForce;
         };
-        joint_cmd                                               m_JointsInfo, m_JointSet, m_JointReset, m_JointMirror, m_JointReview, m_JointLimitsMode, m_JointsView;
+        joint_cmd                                               m_JointsInfo, m_JointSet, m_JointReset, m_JointMirror, m_JointReview, m_JointLimitsMode, m_JointsView, m_JointAnalyze, m_JointApplyFit;
 
         // The undo step every joint edit becomes: the joint section before and after, as text (xskeleton_joints::JointState)
         struct joint_edit_cmd : xundo::command_base
@@ -494,6 +505,25 @@ namespace xskeleton_editor
         bool                                                    m_bJointsMode   = false;
         bool                                                    m_bJointSymmetry = true;
         std::string                                             m_JointKey;                 // what m_JointRes was resolved from
+
+        // J4 "Analyze clips": evidence from the packages on this skeleton, and the proposal (never applied by itself)
+        struct jfit_source { std::string m_Package; std::wstring m_Path; bool m_bUse = true; bool m_bStale = false; xskeleton_joint_evidence::evidence m_E; };
+        struct jfit_row
+        {
+            int                             m_Bone = -1;
+            xanimation::joint_limit         m_New;
+            xanimation::joint_fit_report    m_Rep;
+            int                             m_nCoverage = 0;            // distinct poses (5 degree cells), not raw frames
+            int                             m_iSrc = -1, m_iClip = -1, m_iFrame = -1;     // the worst sample
+            bool                            m_bProtected = false;       // reviewed: kept unless "include reviewed"
+            bool                            m_bSelected  = true;
+            bool                            m_bChanges   = false;       // the proposed limit differs from the current one (off-model samples alone change nothing)
+        };
+        std::vector<jfit_source>                                m_FitSources;
+        std::vector<jfit_row>                                   m_FitRows;
+        std::string                                             m_FitKey;               // the joint state + skeleton the proposal was made from
+        int                                                     m_FitFrames = 0, m_FitFree = 0;
+        bool                                                    m_bFitIncludeReviewed = false, m_bFitOpen = false;
         xskeleton_joints::resolution                            m_JointRes;
         std::vector<std::string>                                m_JNames;
         std::vector<std::int32_t>                               m_JParents;
@@ -552,6 +582,8 @@ namespace xskeleton_editor
             , m_JointMirror    (m_Undo, *this, joint_cmd::kind::mirror, "JointMirror", "Gives the bone on the other side the mirror of this bone's limit (frame aware). Refuses to overwrite a reviewed other side that differs unless -Force 1. Usage: JointMirror -Bone name [-Force 1]")
             , m_JointReview    (m_Undo, *this, joint_cmd::kind::review, "JointReview", "Marks a bone's limit reviewed (from the console: recorded as such). Usage: JointReview -Bone name [-Mirror 1]")
             , m_JointLimitsMode(m_Undo, *this, joint_cmd::kind::mode,   "JointLimits", "Turns the skeleton's joint limits on or off (off: every joint free, as before). Usage: JointLimits -Mode On|Off")
+            , m_JointAnalyze   (m_Undo, *this, joint_cmd::kind::analyze, "JointAnalyze", "Analyze clips: what the packages on this skeleton do with each joint, against its current limits - a proposal (widen only, reviewed joints protected), never applied by itself. Usage: JointAnalyze [-Packages \"hex ...\"] [-IncludeReviewed 1] [-ShowWorst bone]")
+            , m_JointApplyFit  (m_Undo, *this, joint_cmd::kind::apply,  "JointApplyProposal", "Applies the Analyze clips proposal (all selected rows, or -Bones) as ONE undo step; refused when the joints or the skeleton changed since. Usage: JointApplyProposal [-Bones \"a b\"]")
             , m_JointsView     (m_Undo, *this, joint_cmd::kind::view,   "JointsView",  "Joints mode (view only, not saved): on/off, reset the test pose; reports the selected joint, the pull handle's position (window pixels) and the last pull. Usage: JointsView [-On 1|0] [-ResetPose 1]")
             , m_JointEdit      (m_Undo, *this)
         {
@@ -877,7 +909,8 @@ namespace xskeleton_editor
         static const char* JointCmdName(joint_cmd::kind K) noexcept
         {
             switch (K) { case joint_cmd::kind::info: return "JointsInfo"; case joint_cmd::kind::set: return "JointSet"; case joint_cmd::kind::reset: return "JointReset";
-                         case joint_cmd::kind::mirror: return "JointMirror"; case joint_cmd::kind::review: return "JointReview"; case joint_cmd::kind::view: return "JointsView"; default: return "JointLimits"; }
+                         case joint_cmd::kind::mirror: return "JointMirror"; case joint_cmd::kind::review: return "JointReview"; case joint_cmd::kind::view: return "JointsView";
+                         case joint_cmd::kind::analyze: return "JointAnalyze"; case joint_cmd::kind::apply: return "JointApplyProposal"; default: return "JointLimits"; }
         }
 
         std::string RunJoint(joint_cmd& Cmd) noexcept
@@ -910,6 +943,7 @@ namespace xskeleton_editor
                 {
                     const auto& Lb = m_JointRes.m_Limits[b];
                     if (xstrtool::findI(Fr, "conf") == 0) Said = JointCommand(std::format("JointSet -Bone {} -Frame \"{} {} {} {}\"{}", xeditor::Quote(m_JNames[b]), Lb.m_Frame.m_X, Lb.m_Frame.m_Y, Lb.m_Frame.m_Z, Lb.m_Frame.m_W, bSymV ? " -Mirror 1" : ""));
+                    else if (xstrtool::findI(Fr, "clip") == 0) { xmath::fquat Fq; if (FrameFromClips(b, Fq)) { m_bJFramePending = true; m_JFrameBone = b; m_JFrameNew = Fq; Said = "frame pending (snapped to the clips' bend axis)"; } else Said = "snap to clips: no package evidence moves this joint"; }
                     else if (xstrtool::findI(Fr, "snap") == 0) { xmath::fquat Fq; if (FrameFromPoseBend(b, Fq)) { m_bJFramePending = true; m_JFrameBone = b; m_JFrameNew = Fq; Said = "frame pending (snapped to the pose's bend)"; } else Said = "snap: the joint is not bent in the test pose"; }
                     else { char* pEnd = nullptr; const float Roll = std::strtof(Fr.c_str(), &pEnd); m_bJFramePending = true; m_JFrameBone = b; m_JFrameRoll = Roll; m_JFrameNew = (Lb.m_Frame * xanimation::details::AxisAngle(xanimation::details::AxX, Roll * xskeleton_joints::deg_v)).NormalizeCopy(); Said = "frame pending (rolled)"; }
                 }
@@ -929,6 +963,21 @@ namespace xskeleton_editor
                     , m_bJAsymPopup ? "yes" : "no", Said.empty() ? "" : "; said: ", Said);
             }
             if (Cmd.m_Kind != joint_cmd::kind::mode && !JointRig(Names, Parents, Rest)) return std::format("{}: no compiled skeleton (compile it first)", JointCmdName(Cmd.m_Kind));
+            if (Cmd.m_Kind == joint_cmd::kind::analyze)
+            {
+                std::string Pk, Inc, Worst; GetArg(Cmd.m_Parser, Cmd.m_hA, Pk); GetArg(Cmd.m_Parser, Cmd.m_hB, Inc); GetArg(Cmd.m_Parser, Cmd.m_hBone, Worst);
+                if (!Worst.empty()) return "JointAnalyze: " + FitShowWorst(Worst);
+                FitLoadSources();
+                if (!Pk.empty()) for (auto& S : m_FitSources) S.m_bUse = xstrtool::findI(Pk, S.m_Package) != std::string::npos;
+                m_bFitIncludeReviewed = Inc == "1" || Inc == "true";
+                return "JointAnalyze: " + FitAnalyze();
+            }
+            if (Cmd.m_Kind == joint_cmd::kind::apply)
+            {
+                std::string Bs; GetArg(Cmd.m_Parser, Cmd.m_hA, Bs);
+                if (!Bs.empty()) for (auto& Rw : m_FitRows) Rw.m_bSelected = Rw.m_Bone >= 0 && Rw.m_Bone < int(m_JNames.size()) && (" " + Bs + " ").find(" " + m_JNames[Rw.m_Bone] + " ") != std::string::npos;
+                return "JointApplyProposal: " + FitApply();
+            }
             auto R = xskeleton_joints::Resolve(*pDesc, Names, Parents, Rest);
             std::string BoneName; GetArg(Cmd.m_Parser, Cmd.m_hBone, BoneName);
             int iBone = -1;
@@ -1822,6 +1871,184 @@ namespace xskeleton_editor
             m_bJFramePending = false; m_JFrameRoll = 0;
             return CommitJointLimit(m_JNames[b], Args, bSym);
         }
+        //----------------------------------------------------------------------------------------
+        // J4 Analyze clips: the packages' evidence (JointEvidence.bin written by their compile), a widen-only proposal per joint, applied
+        // only by the user, as one undo step, and refused when the joints or the skeleton changed since the analysis.
+        //----------------------------------------------------------------------------------------
+        std::string FitStateKey() noexcept
+        {
+            auto* pDesc = Desc();
+            std::string K = pDesc ? xskeleton_joints::JointState(*pDesc) : std::string{};
+            for (const auto& N : m_JNames) { K += '|'; K += N; }
+            return K;
+        }
+
+        // every package compiled against this skeleton: the AnimPackage logs next to this skeleton's log folder
+        void FitLoadSources() noexcept
+        {
+            m_FitSources.clear();
+            if (!UpdateJoints()) return;
+            const std::filesystem::path LogsRoot = std::filesystem::path(m_Document.m_LogPath).parent_path().parent_path().parent_path().parent_path();
+            const std::uint64_t Me = m_Document.m_Guid.m_Instance.m_Value;
+            std::error_code Ec;
+            for (std::filesystem::recursive_directory_iterator It(LogsRoot / L"AnimPackage", Ec), End; !Ec && It != End; It.increment(Ec))
+            {
+                if (It->path().filename() != L"JointEvidence.bin") continue;
+                jfit_source S;
+                S.m_Path = It->path().wstring();
+                if (!xskeleton_joint_evidence::Read(S.m_Path, S.m_E) || S.m_E.m_Skeleton != Me) continue;
+                S.m_Package = xstrtool::To(It->path().parent_path().stem().wstring());
+                S.m_bStale = S.m_E.m_Bones != m_JNames;            // the skeleton's bones changed since that package compiled
+                S.m_bUse = !S.m_bStale;
+                m_FitSources.push_back(std::move(S));
+            }
+            std::sort(m_FitSources.begin(), m_FitSources.end(), [](const auto& A, const auto& B) { return A.m_Package < B.m_Package; });
+        }
+
+        std::string FitAnalyze() noexcept
+        {
+            using namespace xanimation;
+            m_FitRows.clear(); m_FitFrames = 0; m_FitFree = 0; m_bFitOpen = true;
+            if (!UpdateJoints()) return "no compiled skeleton";
+            auto* pDesc = Desc();
+            int nUsed = 0, nStale = 0;
+            for (const auto& S : m_FitSources) { nUsed += S.m_bUse && !S.m_bStale; nStale += S.m_bStale; for (const auto& C : S.m_E.m_Clips) if (S.m_bUse && !S.m_bStale) m_FitFrames += C.m_nFrames; }
+            if (!nUsed) return m_FitSources.empty() ? "no package on this skeleton has evidence yet (compile a package that uses it)"
+                                                    : std::format("no usable package ({} stale: their skeleton bones differ - recompile them)", nStale);
+            const int N = int(m_JNames.size());
+            std::vector<xmath::fquat> Samples; std::vector<std::array<int, 3>> Where;
+            for (int b = 0; b < N; ++b)
+            {
+                const auto& L = m_JointRes.m_Limits[b];
+                if (L.m_Type == joint_type::FREE) { ++m_FitFree; continue; }
+                Samples.clear(); Where.clear();
+                for (int s = 0; s < int(m_FitSources.size()); ++s)
+                {
+                    const auto& S = m_FitSources[s];
+                    if (!S.m_bUse || S.m_bStale) continue;
+                    for (int c = 0; c < int(S.m_E.m_Clips.size()); ++c)
+                        for (int f = 0; f < S.m_E.m_Clips[c].m_nFrames; ++f) { Samples.push_back(S.m_E.m_Clips[c].m_Rotations[std::size_t(f) * N + b]); Where.push_back({ s, c, f }); }
+                }
+                jfit_row Rw; Rw.m_Bone = b;
+                Rw.m_New = ProposeExpansion(L, Samples, 2.0f * xskeleton_joints::deg_v, &Rw.m_Rep, 3.0f * xskeleton_joints::deg_v);     // real clips wander off a hinge a little
+                if (!Rw.m_Rep.m_nOutside && !Rw.m_Rep.m_nOffModel && !Rw.m_Rep.m_nSingular) continue;
+                // coverage: distinct poses (5 degree cells of the joint's swing and twist), not raw frames
+                std::set<std::tuple<int, int, int>> Cells;
+                for (const auto& Q : Samples)
+                {
+                    float Sy, Sz, Tw; bool Sg; details::SplitBall(JointRotation(L, Q), Sy, Sz, Tw, Sg);
+                    const float C = 1.0f / (5.0f * xskeleton_joints::deg_v);
+                    Cells.insert({ int(std::floor(Sy * C)), int(std::floor(Sz * C)), int(std::floor(Tw * C)) });
+                }
+                Rw.m_nCoverage = int(Cells.size());
+                if (Rw.m_Rep.m_iWorst >= 0) { Rw.m_iSrc = Where[Rw.m_Rep.m_iWorst][0]; Rw.m_iClip = Where[Rw.m_Rep.m_iWorst][1]; Rw.m_iFrame = Where[Rw.m_Rep.m_iWorst][2]; }
+                const auto* pO = pDesc->findJointOverride(m_JNames[b]);
+                Rw.m_bProtected = pO && pO->m_Review == xskeleton_desc::joint_review::REVIEWED && !m_bFitIncludeReviewed;
+                Rw.m_bChanges  = xskeleton_joints::Describe(Rw.m_New) != xskeleton_joints::Describe(L);
+                Rw.m_bSelected = !Rw.m_bProtected && Rw.m_bChanges;
+                m_FitRows.push_back(Rw);
+            }
+            m_FitKey = FitStateKey();
+            std::string T = std::format("{} package(s), {} frames; {} joint(s) would change, {} free joints (nothing to widen){}\n", nUsed, m_FitFrames
+                , std::count_if(m_FitRows.begin(), m_FitRows.end(), [](const auto& R) { return R.m_bChanges; }), m_FitFree, nStale ? std::format("; {} stale package(s) skipped", nStale) : "");
+            for (const auto& Rw : m_FitRows)
+                T += std::format("  {}: {} -> {} | outside {} of {} (worst {:.1f} deg) | off-model {} | coverage {} poses{}{}\n", m_JNames[Rw.m_Bone]
+                    , xskeleton_joints::Describe(m_JointRes.m_Limits[Rw.m_Bone]), xskeleton_joints::Describe(Rw.m_New), Rw.m_Rep.m_nOutside, Rw.m_Rep.m_nSamples
+                    , Rw.m_Rep.m_WorstExcess / xskeleton_joints::deg_v, Rw.m_Rep.m_nOffModel, Rw.m_nCoverage, Rw.m_bProtected ? " | reviewed: protected" : "", !Rw.m_bChanges ? " | no change (only off-model samples: check the frame)" : Rw.m_bSelected ? " | selected" : "");
+            return T;
+        }
+
+        std::string FitApply() noexcept
+        {
+            if (m_FitRows.empty()) return "nothing to apply (Analyze clips first)";
+            if (FitStateKey() != m_FitKey) return "the joints or the skeleton changed since the analysis: analyze again (stale proposal refused)";
+            std::string Pk;
+            for (const auto& S : m_FitSources) if (S.m_bUse && !S.m_bStale) Pk += (Pk.empty() ? "" : " ") + S.m_Package;
+            int n = 0;
+            const auto Err = CommitJointEdit("Joint limits fitted from clips", [&](desc& D) -> std::string
+            {
+                for (const auto& Rw : m_FitRows)
+                {
+                    if (!Rw.m_bSelected || !Rw.m_bChanges) continue;
+                    if (Rw.m_bProtected) return std::format("'{}' is reviewed: analyze with IncludeReviewed to change it", m_JNames[Rw.m_Bone]);
+                    xskeleton_desc::joint_override O;
+                    const bool bOld = D.findJointOverride(m_JNames[Rw.m_Bone]) != nullptr;
+                    if (bOld) O = *D.findJointOverride(m_JNames[Rw.m_Bone]); else O.m_BoneName = m_JNames[Rw.m_Bone];
+                    xskeleton_joints::SetOverrideFields(O, Rw.m_New, O.m_bFrameSet);
+                    if (O.m_bFrameSet) O.m_Frame = Rw.m_New.m_Frame;
+                    O.m_Source = xskeleton_desc::joint_source::FITTED;
+                    O.m_Provenance = std::format("fitted from clips: packages {} ({} frames)", Pk, m_FitFrames);
+                    if (bOld) *D.findJointOverride(m_JNames[Rw.m_Bone]) = O; else D.m_JointOverrides.push_back(O);
+                    ++n;
+                }
+                return n ? std::string{} : std::string("no selected row changes anything");
+            });
+            if (!Err.empty()) return Err;
+            m_FitRows.clear(); m_JointKey.clear();
+            return std::format("{} joint(s) widened to what the clips do (one undo step)", n);
+        }
+
+        // the worst frame of a proposal row becomes the test pose (never saved)
+        std::string FitShowWorst(const std::string& Bone) noexcept
+        {
+            for (const auto& Rw : m_FitRows)
+            {
+                if (Rw.m_Bone < 0 || m_JNames[Rw.m_Bone] != Bone || Rw.m_iSrc < 0) continue;
+                const auto& C = m_FitSources[Rw.m_iSrc].m_E.m_Clips[Rw.m_iClip];
+                m_TestPose = m_JRest;
+                for (int i = 0; i < int(m_JNames.size()); ++i) m_TestPose.m_Rotation[i] = C.m_Rotations[std::size_t(Rw.m_iFrame) * m_JNames.size() + i];
+                m_bTestPose = true; m_bJointsMode = true; m_Selected = { Rw.m_Bone };
+                return std::format("test pose = '{}' frame {} (package {}), the worst for {}", C.m_Name, Rw.m_iFrame, m_FitSources[Rw.m_iSrc].m_Package, Bone);
+            }
+            return std::format("no proposal row for '{}' (Analyze clips first)", Bone);
+        }
+
+        // the hinge axis (z) snapped to the axis the clips bend this joint about (the principal axis of its rotations from rest)
+        bool FrameFromClips(int b, xmath::fquat& Out)
+        {
+            if (m_FitSources.empty()) FitLoadSources();
+            const int N = int(m_JNames.size());
+            if (b < 0 || b >= N) return false;
+            double M[3][3] = {}; double n = 0;
+            std::vector<xmath::fvec3> V;
+            // a hinge bends about an axis across the bone: the twist about the long axis (x) is taken out before the principal axis
+            const auto Xb = (m_JointRes.m_Limits[b].m_Frame * xmath::fvec3(1, 0, 0)).NormalizeSafeCopy();
+            for (const auto& S : m_FitSources)
+            {
+                if (!S.m_bUse || S.m_bStale) continue;
+                for (const auto& C : S.m_E.m_Clips)
+                    for (int f = 0; f < C.m_nFrames; ++f)
+                    {
+                        auto v = xanimation::details::LogQ(xanimation::details::Canon(m_JRest.m_Rotation[b].ConjugateCopy() * C.m_Rotations[std::size_t(f) * N + b]));
+                        v = v - Xb * v.Dot(Xb);
+                        V.push_back(v);
+                        const double a[3] = { v.m_X, v.m_Y, v.m_Z };
+                        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) M[i][j] += a[i] * a[j];
+                        n += v.Length();
+                    }
+            }
+            if (V.empty() || n / V.size() < 2.0 * xskeleton_joints::deg_v) return false;     // the clips barely move it: nothing to say
+            double a[3] = { 0, 0, 1 };
+            for (int it = 0; it < 50; ++it)
+            {
+                double r[3] = {};
+                for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) r[i] += M[i][j] * a[j];
+                const double l = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]); if (l < 1e-12) return false;
+                for (int i = 0; i < 3; ++i) a[i] = r[i] / l;
+            }
+            xmath::fvec3 Ax{ static_cast<float>(a[0]), static_cast<float>(a[1]), static_cast<float>(a[2]) };
+            double Sgn = 0; for (const auto& v : V) Sgn += v.Dot(Ax);
+            if (Sgn < 0) Ax = Ax * -1.0f;                                       // bending the way the clips mostly bend is +z
+            const auto& L = m_JointRes.m_Limits[b];
+            const auto X = (L.m_Frame * xmath::fvec3(1, 0, 0)).NormalizeSafeCopy();
+            auto Z = Ax - X * Ax.Dot(X);
+            if (Z.LengthSq() < 1e-6f) return false;
+            Z = Z.NormalizeCopy();
+            const auto Y = Z.Cross(X).NormalizeCopy();
+            Out = xanimation::QuatFromBasis(X, Y, X.Cross(Y).NormalizeCopy()).NormalizeCopy();
+            return true;
+        }
+
         // the hinge axis snapped to the bend the test pose shows at this joint (between the parent's segment and the bone's)
         bool FrameFromPoseBend(int b, xmath::fquat& Out) const
         {
@@ -2193,6 +2420,50 @@ namespace xskeleton_editor
             if (ImGui::Combo("Show", &F, Filters, 4)) m_JFilter = joint_filter(F);
             if (ImGui::IsItemHovered()) xeditor::hint::Text("Which joints draw their range: the selected one only, its chain, the ones that need attention, or all. Tags: R reviewed, * changed since its review, ? frame to confirm, ! outside its limit.");
 
+            // Analyze clips (J4): a proposal from what the packages on this skeleton do - nothing changes until Apply
+            if (ImGui::Button("Analyze clips...")) { FitLoadSources(); m_FitRows.clear(); m_bFitOpen = true; }
+            if (ImGui::IsItemHovered()) xeditor::hint::Text("Looks at what the animation packages on this skeleton do with each joint and proposes wider limits where the clips go further. It only proposes: nothing changes until you Apply.");
+            if (m_bFitOpen && ImGui::CollapsingHeader("Analyze clips###fit", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                if (m_FitSources.empty()) ImGui::TextDisabled("No package on this skeleton has evidence yet: compile a package that uses it.");
+                for (std::size_t s = 0; s < m_FitSources.size(); ++s)
+                {
+                    auto& S = m_FitSources[s];
+                    int nF = 0; std::string Clips; for (const auto& C : S.m_E.m_Clips) { nF += C.m_nFrames; Clips += (Clips.empty() ? "" : ", ") + C.m_Name; }
+                    ImGui::BeginDisabled(S.m_bStale);
+                    ImGui::Checkbox(std::format("{}: {} clip(s), {} frames{}###src{}", S.m_Package, S.m_E.m_Clips.size(), nF, S.m_bStale ? " (stale: recompile it)" : "", s).c_str(), &S.m_bUse);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered()) xeditor::hint::Text(Clips.c_str());
+                }
+                ImGui::Checkbox("Include reviewed joints", &m_bFitIncludeReviewed);
+                if (ImGui::IsItemHovered()) xeditor::hint::Text("Reviewed joints are protected by default: the clips may be wrong (a bad retarget) and widening would hide it.");
+                ImGui::SameLine();
+                if (ImGui::Button("Analyze")) m_JointMsg = FitAnalyze();
+                if (!m_FitRows.empty())
+                {
+                    ImGui::Text("%d frames; %d free joint(s) have nothing to widen", m_FitFrames, m_FitFree);
+                    // one block per joint (the panel is narrow: a table squeezed its text to one letter a line)
+                    for (std::size_t r = 0; r < m_FitRows.size(); ++r)
+                    {
+                        auto& Rw = m_FitRows[r];
+                        ImGui::PushID(int(r));
+                        ImGui::Separator();
+                        ImGui::BeginDisabled(Rw.m_bProtected || !Rw.m_bChanges); ImGui::Checkbox("##sel", &Rw.m_bSelected); ImGui::EndDisabled();
+                        ImGui::SameLine(); if (ImGui::Selectable(m_JNames[Rw.m_Bone].c_str(), SelectedJoint() == Rw.m_Bone, 0, ImVec2(ImGui::GetContentRegionAvail().x - 60, 0))) m_Selected = { Rw.m_Bone };
+                        if (Rw.m_iSrc >= 0) { ImGui::SameLine(); if (ImGui::SmallButton("Worst")) m_JointMsg = FitShowWorst(m_JNames[Rw.m_Bone]); if (ImGui::IsItemHovered()) xeditor::hint::Text("Shows the clip frame furthest outside the current limit as the test pose."); }
+                        ImGui::TextWrapped("now:  %s", xskeleton_joints::Describe(m_JointRes.m_Limits[Rw.m_Bone]).c_str());
+                        if (Rw.m_bChanges) ImGui::TextWrapped("to:   %s", xskeleton_joints::Describe(Rw.m_New).c_str());
+                        else ImGui::TextDisabled("no change: only samples the %s cannot hold - check its frame (Snap to clips)", m_JointRes.m_Limits[Rw.m_Bone].m_Type == joint_type::HINGE ? "hinge" : "limit");
+                        ImGui::TextDisabled("outside %d of %d (worst %.1f deg), %d distinct poses%s", Rw.m_Rep.m_nOutside, Rw.m_Rep.m_nSamples, Rw.m_Rep.m_WorstExcess / xskeleton_joints::deg_v, Rw.m_nCoverage, Rw.m_bProtected ? ", reviewed: protected" : "");
+                        if (Rw.m_Rep.m_nOffModel) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "%d sample(s) the %s cannot hold (never promoted)", Rw.m_Rep.m_nOffModel, m_JointRes.m_Limits[Rw.m_Bone].m_Type == joint_type::HINGE ? "hinge" : "limit");
+                        ImGui::PopID();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::Button("Apply selected")) m_JointMsg = FitApply();
+                    if (ImGui::IsItemHovered()) xeditor::hint::Text("The selected joints take the proposed limits (marked Fitted, with the packages they came from) as one undo step.");
+                }
+            }
+
             // the joints that need attention: click to select; a frame can be confirmed from here
             const auto Att = JointAttention();
             if (!m_JointRes.m_Errors.empty()) for (const auto& E : m_JointRes.m_Errors) ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "%s", E.c_str());
@@ -2320,6 +2591,14 @@ namespace xskeleton_editor
                     else m_JointMsg = "Snap to the pose's bend: pull the chain so this joint is clearly bent first (more than 3 degrees)";
                 }
                 if (ImGui::IsItemHovered()) xeditor::hint::Text("Bend this joint with a test pull, then snap: the hinge axis (z) becomes the axis the pose bends about.");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Snap to clips"))
+                {
+                    xmath::fquat Fq;
+                    if (FrameFromClips(b, Fq)) { m_bJFramePending = true; m_JFrameBone = b; m_JFrameNew = Fq; m_JointMsg.clear(); }
+                    else m_JointMsg = "Snap to clips: no package on this skeleton moves this joint enough to say its bend axis";
+                }
+                if (ImGui::IsItemHovered()) xeditor::hint::Text("The hinge axis (z) becomes the axis this joint bends about in the clips of the packages on this skeleton.");
                 if (m_bJFramePending && m_JFrameBone == b)
                 {
                     ImGui::TextWrapped("New frame: the orange outline turns the range with the frame, the dotted cyan one keeps the range where it is.");
