@@ -375,7 +375,7 @@ namespace xskeleton_editor
         // (with its mirror and its review invalidation) is one undo step; a no-op leaves none; editing never marks a joint reviewed.
         struct joint_cmd : xundo::query_command_base
         {
-            enum class kind { info, set, reset, mirror, review, mode };
+            enum class kind { info, set, reset, mirror, review, mode, view };
             session& m_Session; kind m_Kind; const char* m_pHelp;
             joint_cmd(xundo::system& System, session& Session, kind Kind, const char* pName, const char* pHelp) noexcept
                 : query_command_base(System, pName, nullptr), m_Session(Session), m_Kind(Kind), m_pHelp(pHelp) { RegisterArguments(); }
@@ -386,6 +386,7 @@ namespace xskeleton_editor
                 {
                 case kind::info:   m_hBone = m_Parser.addOption("Bone", "One bone (its compiled name); default: every bone", false, 1); break;
                 case kind::mode:   m_hA = m_Parser.addOption("Mode", "On or Off", true, 1); break;
+                case kind::view:   m_hA = m_Parser.addOption("On", "1: Joints mode on, 0: off", false, 1); m_hB = m_Parser.addOption("ResetPose", "1: the test pose back to rest", false, 1); break;
                 case kind::set:
                     m_hBone = m_Parser.addOption("Bone",     "The bone (its compiled name)", true, 1);
                     m_hA    = m_Parser.addOption("Geometry", "Free, Fixed, Hinge or Ball", false, 1);
@@ -400,13 +401,13 @@ namespace xskeleton_editor
                     break;
                 case kind::reset:  m_hBone = m_Parser.addOption("Bone", "The bone", true, 1); m_hMirror = m_Parser.addOption("Mirror", "1: the other side too", false, 1); break;
                 case kind::mirror: m_hBone = m_Parser.addOption("Bone", "The bone whose limit goes to the other side", true, 1); m_hForce = m_Parser.addOption("Force", "1: overwrite a reviewed other side that differs", false, 1); break;
-                case kind::review: m_hBone = m_Parser.addOption("Bone", "The bone", true, 1); m_hMirror = m_Parser.addOption("Mirror", "1: the other side too", false, 1); break;
+                case kind::review: m_hBone = m_Parser.addOption("Bone", "The bone", true, 1); m_hMirror = m_Parser.addOption("Mirror", "1: the other side too", false, 1); m_hG = m_Parser.addOption("By", "User: the Mark reviewed button (default: the console)", false, 1); break;
                 }
             }
             std::string Query() noexcept override { return m_Session.RunJoint(*this); }
             xcmdline::parser::handle m_hBone, m_hA, m_hB, m_hC, m_hD, m_hE, m_hF, m_hG, m_hMirror, m_hForce;
         };
-        joint_cmd                                               m_JointsInfo, m_JointSet, m_JointReset, m_JointMirror, m_JointReview, m_JointLimitsMode;
+        joint_cmd                                               m_JointsInfo, m_JointSet, m_JointReset, m_JointMirror, m_JointReview, m_JointLimitsMode, m_JointsView;
 
         // The undo step every joint edit becomes: the joint section before and after, as text (xskeleton_joints::JointState)
         struct joint_edit_cmd : xundo::command_base
@@ -481,6 +482,29 @@ namespace xskeleton_editor
 
         std::vector<e19::draw_vert>                             m_Outline, m_Fill;
 
+        // Joints mode (J2): view state only - never saved, never in the undo history
+        bool                                                    m_bJointsMode   = false;
+        bool                                                    m_bJointSymmetry = true;
+        std::string                                             m_JointKey;                 // what m_JointRes was resolved from
+        xskeleton_joints::resolution                            m_JointRes;
+        std::vector<std::string>                                m_JNames;
+        std::vector<std::int32_t>                               m_JParents;
+        xanimation::pose                                        m_JRest;
+        xanimation::body_ik                                     m_Ik;
+        bool                                                    m_bTestPose     = false;    // the sandbox pose: stays after a pull until Reset pose / leaving the mode
+        xanimation::pose                                        m_TestPose;
+        std::vector<xmath::fquat>                               m_CurR;                     // model rotations of the pose shown (rest or sandbox)
+        std::vector<xmath::fvec3>                               m_FrozenView;               // view positions before the sandbox pose
+        bool                                                    m_bPulling = false, m_bPullHover = false;
+        int                                                     m_PullBone = -1, m_PullEff = -1;
+        xanimation::pose                                        m_PullBase;
+        xmath::fvec3                                            m_PullPlane{}, m_PullTargetView{};
+        xanimation::ik_task_report                              m_PullRep;
+        std::string                                             m_PullNote, m_JointMsg;
+        float                                                   m_JEdit[8] = {};            // the panel's numeric fields while one is being edited
+        int                                                     m_JEditBone = -1;
+        ImVec2                                                  m_HandleScreen{};
+
         session(xresource::full_guid Guid, xresource_editor::library::guid LibraryGuid, xgpu::device* pDevice) noexcept
             : descriptor_editor("Skeleton", Guid, LibraryGuid, pDevice)
             , m_SetBone(m_Undo, m_Document, m_Details), m_MatchLOD(m_Undo, m_Document, m_Details), m_SetMaskWeight(m_Undo, m_Document, m_Details)
@@ -496,6 +520,7 @@ namespace xskeleton_editor
             , m_JointMirror    (m_Undo, *this, joint_cmd::kind::mirror, "JointMirror", "Gives the bone on the other side the mirror of this bone's limit (frame aware). Refuses to overwrite a reviewed other side that differs unless -Force 1. Usage: JointMirror -Bone name [-Force 1]")
             , m_JointReview    (m_Undo, *this, joint_cmd::kind::review, "JointReview", "Marks a bone's limit reviewed (from the console: recorded as such). Usage: JointReview -Bone name [-Mirror 1]")
             , m_JointLimitsMode(m_Undo, *this, joint_cmd::kind::mode,   "JointLimits", "Turns the skeleton's joint limits on or off (off: every joint free, as before). Usage: JointLimits -Mode On|Off")
+            , m_JointsView     (m_Undo, *this, joint_cmd::kind::view,   "JointsView",  "Joints mode (view only, not saved): on/off, reset the test pose; reports the selected joint, the pull handle's position (window pixels) and the last pull. Usage: JointsView [-On 1|0] [-ResetPose 1]")
             , m_JointEdit      (m_Undo, *this)
         {
             m_SettingsInspector.BindObject(*xproperty::getObjectByType<view_settings>(), &m_Settings);
@@ -506,6 +531,7 @@ namespace xskeleton_editor
             AddPanel("Skeleton Viewport",  dock::center, [this] { RenderViewport(); }, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
             AddPanel("Bone Hierarchy",     dock::right,  [this] { RenderHierarchy(); });
             AddPanel("Description",        dock::right,  [this] { m_DescriptorInspector.Show(); });
+            AddPanel("Joints",             dock::right,  [this] { RenderJointsPanel(); });
 
             m_bReady = pDevice && m_Scene.Init(*pDevice);
             Reload();
@@ -560,6 +586,7 @@ namespace xskeleton_editor
             m_ErrorMessage.clear();
             m_Selected.clear();
             m_iAnchor = m_iHovered = -1;
+            m_JointKey.clear(); m_bTestPose = m_bPulling = false;
 
             auto* pDesc = Desc();
             if (!pDesc) { m_ErrorMessage = "The descriptor could not be read."; return; }
@@ -818,7 +845,7 @@ namespace xskeleton_editor
         static const char* JointCmdName(joint_cmd::kind K) noexcept
         {
             switch (K) { case joint_cmd::kind::info: return "JointsInfo"; case joint_cmd::kind::set: return "JointSet"; case joint_cmd::kind::reset: return "JointReset";
-                         case joint_cmd::kind::mirror: return "JointMirror"; case joint_cmd::kind::review: return "JointReview"; default: return "JointLimits"; }
+                         case joint_cmd::kind::mirror: return "JointMirror"; case joint_cmd::kind::review: return "JointReview"; case joint_cmd::kind::view: return "JointsView"; default: return "JointLimits"; }
         }
 
         std::string RunJoint(joint_cmd& Cmd) noexcept
@@ -827,6 +854,15 @@ namespace xskeleton_editor
             auto* pDesc = Desc();
             if (!pDesc) return std::format("{}: nothing loaded", JointCmdName(Cmd.m_Kind));
             std::vector<std::string> Names; std::vector<std::int32_t> Parents; xanimation::pose Rest;
+            if (Cmd.m_Kind == joint_cmd::kind::view)
+            {
+                std::string On, Reset; GetArg(Cmd.m_Parser, Cmd.m_hA, On); GetArg(Cmd.m_Parser, Cmd.m_hB, Reset);
+                if (!On.empty()) { m_bJointsMode = On == "1" || On == "true"; if (m_bJointsMode) m_Settings.m_Pose = pose_mode::FROZEN; else { m_bTestPose = m_bPulling = false; m_PullNote.clear(); } }
+                if (Reset == "1" || Reset == "true") { m_bTestPose = false; m_PullNote.clear(); }
+                const int b = SelectedJoint();
+                return std::format("JointsView: {}; selected {}; handle {}; test pose {}; last pull: {}", m_bJointsMode ? "on" : "off", b >= 0 && b < int(m_JNames.size()) ? m_JNames[b] : "(none)"
+                    , m_PullEff >= 0 ? std::format("{:.0f} {:.0f}", m_HandleScreen.x, m_HandleScreen.y) : "(none)", m_bTestPose ? "yes" : "no", m_PullNote.empty() ? "(none)" : m_PullNote);
+            }
             if (Cmd.m_Kind != joint_cmd::kind::mode && !JointRig(Names, Parents, Rest)) return std::format("{}: no compiled skeleton (compile it first)", JointCmdName(Cmd.m_Kind));
             auto R = xskeleton_joints::Resolve(*pDesc, Names, Parents, Rest);
             std::string BoneName; GetArg(Cmd.m_Parser, Cmd.m_hBone, BoneName);
@@ -929,6 +965,8 @@ namespace xskeleton_editor
             {
                 std::vector<std::string_view> Views(Names.begin(), Names.end());
                 const int Other = bMirror ? xanimation::FindMirrorBone(Views, iBone) : -1;
+                std::string By; GetArg(Cmd.m_Parser, Cmd.m_hG, By);
+                const bool ByUser = xstrtool::findI(By, "user") == 0;
                 const auto Err = CommitJointEdit(std::format("Joint limit reviewed {}", BoneName), [&](desc& D) -> std::string
                 {
                     for (int b : { iBone, Other })
@@ -944,7 +982,8 @@ namespace xskeleton_editor
                         }
                         pO->m_Review = xskeleton_desc::joint_review::REVIEWED;
                         pO->m_ReviewedHash = xskeleton_joints::ReviewHash(*pO);
-                        if (pO->m_Provenance.find("reviewed from the console") == std::string::npos) pO->m_Provenance += pO->m_Provenance.empty() ? "reviewed from the console" : "; reviewed from the console";
+                        const char* pBy = ByUser ? "reviewed in the editor" : "reviewed from the console";
+                        if (pO->m_Provenance.find(pBy) == std::string::npos) pO->m_Provenance += pO->m_Provenance.empty() ? std::string(pBy) : std::string("; ") + pBy;
                     }
                     return {};
                 });
@@ -1267,7 +1306,7 @@ namespace xskeleton_editor
             if (bGizmo) ImGui::Dummy(Avail);
             else        ImGui::InvisibleButton("##SkeletonViewport", Avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
             const bool bHovered = ImGui::IsItemHovered() && !bGizmo;
-            if (!xeditor::transform_gizmo::Dragging())
+            if (!xeditor::transform_gizmo::Dragging() && !m_bPulling && !(m_bJointsMode && m_bPullHover))
             {
                 xeditor::PreviewGestures();
                 m_Scene.HandleInput();
@@ -1306,6 +1345,7 @@ namespace xskeleton_editor
                     }
             }
             for (auto& W : m_Scaled) W.m_Position = W.m_Position * Scale;
+            if (m_bJointsMode) ApplyJointPose(Scale);
             m_Scene.UpdateView(Min, Avail.x, Avail.y);
 
             // Hover and click: a ray from the mouse against the bones' solid shapes. Matches the original
@@ -1322,7 +1362,8 @@ namespace xskeleton_editor
                 int iHit = -1;
                 PickWedge(*pSkeleton, m_Scaled, m_Scene.m_View.getPosition(), Dir, m_Scene.m_Radius, iHit, T);
                 m_iHovered = iHit;
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                if (m_bJointsMode && m_bPullHover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) StartPull();     // the handle wins over a pick
+                else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 {
                     if (iHit != -1) Select(iHit, ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyShift);
                     else            ClearSelectionUnlessModifier(ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyShift);
@@ -1366,6 +1407,330 @@ namespace xskeleton_editor
             m_Scene.DrawOverlay();
 
             RenderLabels(*pSkeleton, Min, Avail, Mouse);
+            if (m_bJointsMode) DrawJointOverlay(Min, Avail, Scale, Mouse);
+        }
+
+        //----------------------------------------------------------------------------------------
+        // Joints mode (J2, thin slice): the selected joint's allowed range drawn on the bone, a test pull (body_ik inside the limits) in a
+        // sandbox pose that is never saved, and the Joints panel whose edits go through the Joint* commands only.
+        //----------------------------------------------------------------------------------------
+
+        int SelectedJoint() const noexcept { return m_Selected.size() == 1 ? *m_Selected.begin() : -1; }
+
+        // the resolution, redone when the joint section or the skeleton changed
+        bool UpdateJoints() noexcept
+        {
+            auto* pDesc = Desc(); auto* pSkeleton = Skeleton();
+            if (!pDesc || !pSkeleton) return false;
+            const auto Key = std::format("{}|{}", static_cast<const void*>(pSkeleton), xskeleton_joints::JointState(*pDesc));
+            if (Key == m_JointKey) return !m_JNames.empty();
+            m_JointKey = Key;
+            if (!JointRig(m_JNames, m_JParents, m_JRest)) return false;
+            m_JointRes = xskeleton_joints::Resolve(*pDesc, m_JNames, m_JParents, m_JRest);
+            m_Ik.Setup(m_JParents, m_JointRes.m_Limits);
+            if (m_bTestPose && m_TestPose.count() != m_JRest.count()) m_bTestPose = false;
+            return true;
+        }
+
+        // the sandbox pose replaces the frozen pose in the view (positions moved by their model-space change, axes turned)
+        void ApplyJointPose(float Scale) noexcept
+        {
+            if (!UpdateJoints() || m_Scaled.size() != m_JNames.size()) return;
+            std::vector<xmath::fquat> Rr; std::vector<xmath::fvec3> Pr;
+            xanimation::details::WorldRP(xanimation::skeleton_view{ m_JParents }, m_JRest, Rr, Pr);
+            m_FrozenView.resize(m_Scaled.size());
+            for (std::size_t i = 0; i < m_Scaled.size(); ++i) m_FrozenView[i] = m_Scaled[i].m_Position;
+            if (!m_bTestPose) { m_CurR = Rr; return; }
+            std::vector<xmath::fvec3> Pt;
+            xanimation::details::WorldRP(xanimation::skeleton_view{ m_JParents }, m_TestPose, m_CurR, Pt);
+            for (std::size_t i = 0; i < m_Scaled.size(); ++i)
+            {
+                const auto D = (m_CurR[i] * Rr[i].ConjugateCopy()).NormalizeCopy();
+                m_Scaled[i].m_Position = m_Scaled[i].m_Position + (Pt[i] - Pr[i]) * Scale;
+                m_Scaled[i].m_Right = D * m_Scaled[i].m_Right;
+                m_Scaled[i].m_Up    = D * m_Scaled[i].m_Up;
+            }
+        }
+
+        bool ProjectView(const xmath::fvec3& P, const ImVec2& Min, const ImVec2& Size, ImVec2& Out) const noexcept
+        {
+            const xmath::fvec4 Clip = m_Scene.m_View.getW2C() * xmath::fvec4(P, 1.0f);
+            if (Clip.m_W <= 1.0e-4f) return false;
+            Out = ImVec2(Min.x + (Clip.m_X / Clip.m_W * 0.5f + 0.5f) * Size.x, Min.y + (Clip.m_Y / Clip.m_W * 0.5f + 0.5f) * Size.y);
+            return true;
+        }
+
+        int FirstChild(int b) const noexcept { for (int c = b + 1; c < int(m_JParents.size()); ++c) if (m_JParents[c] == b) return c; return -1; }
+
+        void StartPull() noexcept
+        {
+            const int b = SelectedJoint();
+            if (b < 0 || m_PullEff < 0) return;
+            m_bPulling  = true;
+            m_PullBone  = b;
+            m_PullBase  = m_bTestPose ? m_TestPose : m_JRest;     // a pull solves from the pose it started on (the result does not depend on how often the mouse moved)
+            m_PullPlane = m_PullTargetView = m_Scaled[m_PullEff].m_Position;
+        }
+
+        // why a pull stopped short, in words
+        std::string PullReason(const xanimation::ik_task_report& R, const std::vector<std::uint8_t>& W) const
+        {
+            using namespace xanimation;
+            if (R.m_Status == ik_status::REACHED) return "reached";
+            if (R.m_Reasons & ik_reason::LIMIT)
+            {
+                std::string S;      // every joint of the chain that is on a limit, nearest the end first
+                for (int b = int(W.size()) - 1; b >= 0; --b)
+                {
+                    if (!W[b]) continue;
+                    const auto E = Evaluate(m_JointRes.m_Limits[b], m_TestPose.m_Rotation[b], 2e-3f);
+                    if (!E.m_Faces) continue;
+                    const char* pFace = (E.m_Faces & joint_face::HINGE_HIGH) ? "hinge upper limit" : (E.m_Faces & joint_face::HINGE_LOW) ? "hinge lower limit"
+                                      : (E.m_Faces & joint_face::SWING) ? "swing limit" : (E.m_Faces & joint_face::TWIST) ? "twist limit" : "limit";
+                    S += std::format("{}{} at its {}", S.empty() ? "" : ", ", m_JNames[b], pFace);
+                }
+                return S.empty() ? "a joint limit" : S;
+            }
+            if (R.m_Reasons & ik_reason::REACH)  return "beyond reach of the chain";
+            if (R.m_Reasons & ik_reason::LOCKED) return "the chain is 3 bones: the rest of the body is held";
+            if (R.m_Reasons & ik_reason::BUDGET) return "the solver ran out of iterations";
+            return "missed";
+        }
+
+        void DrawJointOverlay(const ImVec2& Min, const ImVec2& Size, float Scale, const ImVec2& Mouse) noexcept
+        {
+            using namespace xanimation;
+            auto* pDraw = ImGui::GetWindowDrawList();
+            if (!UpdateJoints() || m_Scaled.size() != m_JNames.size() || m_CurR.size() != m_JNames.size()) return;
+            auto Text = [&](ImVec2 P, ImU32 Col, const std::string& S)       // text on a dark backing: readable over the floor and the bones
+            {
+                const ImVec2 Sz = ImGui::CalcTextSize(S.c_str());
+                pDraw->AddRectFilled(ImVec2(P.x - 3, P.y - 2), ImVec2(P.x + Sz.x + 3, P.y + Sz.y + 2), IM_COL32(20, 20, 20, 190), 3.0f);
+                pDraw->AddText(P, Col, S.c_str());
+            };
+            const auto Status = std::format("Joints - limits {} - {}{}", Desc()->m_JointLimits == xskeleton_desc::joint_limits_mode::ON ? "on" : "off (preview)"
+                                           , m_bTestPose ? "preview pose, not saved (Reset pose in the Joints panel)" : "drag the orange handle to test", m_bPulling ? "" : "");
+            Text(ImVec2(Min.x + 8, Min.y + 8), IM_COL32(255, 230, 150, 255), Status);
+
+            const int b = SelectedJoint();
+            m_bPullHover = false;
+            if (b < 0) { m_PullEff = -1; return; }
+            const auto& L = m_JointRes.m_Limits[b];
+            const auto  Local = m_bTestPose ? m_TestPose.m_Rotation[b] : m_JRest.m_Rotation[b];
+            const auto  Eval  = Evaluate(L, Local, 2e-3f);
+            const int   c     = FirstChild(b);
+            const auto  P0    = m_Scaled[b].m_Position;
+            float Len = c >= 0 ? (m_Scaled[c].m_Position - P0).Length() : 0;
+            Len = std::max(Len, 0.03f * m_Scene.m_Radius);
+            const auto ParentR = m_JParents[b] >= 0 ? m_CurR[m_JParents[b]] : xmath::fquat::fromIdentity();
+            const auto Ap = (ParentR * L.m_Rest * L.m_Frame).NormalizeCopy();
+            const xmath::fvec3 X(1, 0, 0), Y(0, 1, 0), Z(0, 0, 1);
+
+            const xskeleton_desc::joint_override* pO = nullptr;
+            for (const auto& O : Desc()->m_JointOverrides) if (O.m_BoneName == m_JNames[b]) pO = &O;
+            const bool bReviewed = pO && pO->m_Review == xskeleton_desc::joint_review::REVIEWED;
+            const ImU32 Base = bReviewed ? IM_COL32(120, 230, 140, 255) : IM_COL32(120, 190, 255, 255), Hot = IM_COL32(255, 80, 60, 255);
+            auto Line = [&](const xmath::fvec3& A, const xmath::fvec3& B, ImU32 Col, float T = 2.0f)
+            {
+                ImVec2 a, bb; if (ProjectView(A, Min, Size, a) && ProjectView(B, Min, Size, bb)) pDraw->AddLine(a, bb, Col, T);
+            };
+            // a polyline, dashed while the joint is not reviewed (inferred values look provisional)
+            auto Poly = [&](const std::vector<xmath::fvec3>& Pts, ImU32 Col, bool bLoop)
+            {
+                const int n = int(Pts.size());
+                for (int i = 0; i + 1 < n + (bLoop ? 1 : 0); ++i)
+                    if (bReviewed || (i & 1) == 0) Line(Pts[i], Pts[(i + 1) % n], Col);
+            };
+
+            if (L.m_Type == joint_type::BALL)
+            {
+                std::vector<xmath::fvec3> Ring;
+                for (int k = 0; k < 48; ++k)
+                {
+                    float Sy, Sz; SwingBoundary(L, k * 6.2831853f / 48, Sy, Sz);
+                    Ring.push_back(P0 + (Ap * (details::MakeBall(Sy, Sz, 0) * X)) * (Len * 0.9f));
+                }
+                const ImU32 Col = (Eval.m_Faces & joint_face::SWING) ? Hot : Base;
+                Poly(Ring, Col, true);
+                for (int k = 0; k < 48; k += 12) Line(P0, Ring[k], Col, 1.0f);
+                if (L.m_Twist == axis_motion::LIMITED && L.m_TwistHalf < 3.14f)
+                {
+                    float Sy, Sz, T; bool Sing; details::SplitBall(JointRotation(L, Local), Sy, Sz, T, Sing);
+                    const auto Sw = Ap * details::ExpV(xmath::fvec3(0, Sy, Sz));
+                    const auto Dir = Sw * X, Ref = Sw * Y, C = P0 + Dir * (Len * 0.6f);
+                    std::vector<xmath::fvec3> Arc;
+                    for (int k = 0; k <= 16; ++k)
+                    {
+                        const float t = L.m_TwistCentre - L.m_TwistHalf + 2 * L.m_TwistHalf * k / 16;
+                        Arc.push_back(C + (details::AxisAngle(Dir, t) * Ref) * (Len * 0.18f));
+                    }
+                    Poly(Arc, (Eval.m_Faces & joint_face::TWIST) ? Hot : Base, false);
+                    Line(C, C + (details::AxisAngle(Dir, T) * Ref) * (Len * 0.22f), IM_COL32(255, 220, 80, 255));
+                }
+            }
+            else if (L.m_Type == joint_type::HINGE)
+            {
+                std::vector<xmath::fvec3> Arc;
+                for (int k = 0; k <= 32; ++k)
+                {
+                    const float a = L.m_HingeMin + (L.m_HingeMax - L.m_HingeMin) * k / 32;
+                    Arc.push_back(P0 + (Ap * (details::AxisAngle(Z, a) * X)) * (Len * 0.9f));
+                }
+                Poly(Arc, Base, false);
+                Line(P0, Arc.front(), (Eval.m_Faces & joint_face::HINGE_LOW) ? Hot : Base, 1.5f);
+                Line(P0, Arc.back(),  (Eval.m_Faces & joint_face::HINGE_HIGH) ? Hot : Base, 1.5f);
+            }
+            // where the bone points now
+            const auto Now = (m_CurR[b] * L.m_Frame) * X;
+            Line(P0, P0 + Now * Len, Eval.m_bInside ? IM_COL32(255, 220, 80, 255) : Hot, 2.5f);
+
+            {   // the label: what is allowed, where it came from, and its review
+                ImVec2 S;
+                if (ProjectView(P0, Min, Size, S))
+                {
+                    const auto Txt = std::format("{}  {}\n{}{}", m_JNames[b], xskeleton_joints::Describe(L), m_JointRes.m_Source[b]
+                                                , Eval.m_bInside ? "" : std::format("  - outside by {:.1f} deg", Eval.m_Excess * 57.29578f));
+                    Text(ImVec2(S.x + 10, S.y + 10), IM_COL32(255, 255, 255, 240), Txt);
+                }
+            }
+
+            // the test pull: the handle at the end of the selected bone (its first child)
+            m_PullEff = c;
+            if (c < 0) return;
+            ImVec2 Hs;
+            if (!ProjectView(m_Scaled[c].m_Position, Min, Size, Hs)) return;
+            const float dx = Mouse.x - Hs.x, dy = Mouse.y - Hs.y;
+            m_bPullHover = !m_bPulling && dx * dx + dy * dy < 100.0f;
+            m_HandleScreen = Hs;
+            pDraw->AddCircleFilled(Hs, m_bPullHover || m_bPulling ? 8.0f : 6.0f, IM_COL32(255, 150, 40, 255));
+
+            if (m_bPulling)
+            {
+                if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
+                {
+                    // the mouse on the plane through the handle, facing the camera
+                    const auto Cam = m_Scene.m_View.getPosition();
+                    const auto Dir = m_Scene.m_View.RayFromScreen(Mouse.x, Mouse.y);
+                    const auto N   = (m_PullPlane - Cam).NormalizeSafeCopy();
+                    const float Den = Dir.Dot(N);
+                    if (std::abs(Den) > 1e-6f) m_PullTargetView = Cam + Dir * ((m_PullPlane - Cam).Dot(N) / Den);
+                    // model space: the frozen view position of the effector plus the move, unscaled
+                    std::vector<xmath::fquat> Rr; std::vector<xmath::fvec3> Pr;
+                    details::WorldRP(skeleton_view{ m_JParents }, m_JRest, Rr, Pr);
+                    ik_task T; T.m_Bone = m_PullEff; T.m_bPosition = true;
+                    T.m_Position = Pr[m_PullEff] + (m_PullTargetView - m_FrozenView[m_PullEff]) * (1.0f / std::max(Scale, 1e-6f));
+                    std::vector<std::uint8_t> W(m_JNames.size(), 0);
+                    for (int k = 0, a = m_PullBone; k < 3 && a >= 0 && m_JParents[a] >= 0; ++k, a = m_JParents[a]) W[a] = 1;     // the bone and two above it; the root never
+                    m_Ik.Solve(m_PullBase, W, { &T, 1 }, { &m_PullRep, 1 }, m_TestPose);
+                    m_bTestPose = true;
+                    m_PullNote = std::format("{} {}", m_PullRep.m_Status == ik_status::REACHED ? "reached" : std::format("missed by {:.1f} cm:", m_PullRep.m_PosMiss * 100.0f), m_PullRep.m_Status == ik_status::REACHED ? "" : PullReason(m_PullRep, W));
+                }
+                else m_bPulling = false;
+            }
+            if (m_bTestPose && !m_PullNote.empty())
+            {
+                ImVec2 G;
+                if (ProjectView(m_PullTargetView, Min, Size, G))
+                {
+                    pDraw->AddCircle(G, 9.0f, IM_COL32(255, 255, 255, 200), 0, 2.0f);                // the target asked for (a ghost)
+                    if (m_PullRep.m_Status != ik_status::REACHED) pDraw->AddLine(Hs, G, IM_COL32(255, 80, 60, 220), 1.5f);   // the gap
+                    Text(ImVec2(G.x + 12, G.y - 8), m_PullRep.m_Status == ik_status::REACHED ? IM_COL32(150, 255, 150, 255) : IM_COL32(255, 160, 140, 255), m_PullNote);
+                }
+            }
+        }
+
+        std::string JointCommand(const std::string& Cmd) noexcept
+        {
+            m_JointMsg = m_Undo.Query(Cmd);
+            m_JointKey.clear();
+            return m_JointMsg;
+        }
+
+        void RenderJointsPanel() noexcept
+        {
+            using namespace xanimation;
+            if (ImGui::Checkbox("Joints mode", &m_bJointsMode))
+            {
+                if (m_bJointsMode) m_Settings.m_Pose = pose_mode::FROZEN;       // limits are measured from the rest (frozen) pose
+                else { m_bTestPose = m_bPulling = false; m_PullNote.clear(); }
+            }
+            if (ImGui::IsItemHovered()) xeditor::hint::Text("Shows the selected joint's allowed range on the bone and lets you pull its end to test it. The test pose is never saved.");
+            auto* pDesc = Desc();
+            if (!pDesc || !UpdateJoints()) { ImGui::TextDisabled("Compile the skeleton to see its joints."); return; }
+
+            const bool bOn = pDesc->m_JointLimits == xskeleton_desc::joint_limits_mode::ON;
+            int nReviewed = 0, nNeedsReview = 0;
+            for (const auto& O : pDesc->m_JointOverrides) { nReviewed += O.m_Review == xskeleton_desc::joint_review::REVIEWED; nNeedsReview += O.m_Review == xskeleton_desc::joint_review::NEEDS_REVIEW; }
+            ImGui::Text("Limits: %s", bOn ? "On" : "Off (what you see is a preview)");
+            ImGui::SameLine();
+            if (ImGui::SmallButton(bOn ? "Turn off" : "Turn on")) JointCommand(std::format("JointLimits -Mode {}", bOn ? "Off" : "On"));
+            ImGui::Text("Preset %d   Overrides %d   Reviewed %d", m_JointRes.m_nPreset, m_JointRes.m_nOverride, nReviewed);
+            const int nAttention = nNeedsReview + m_JointRes.m_nNeedFrame + int(m_JointRes.m_Errors.size());
+            if (nAttention) ImGui::TextColored(ImVec4(1, 0.75f, 0.3f, 1), "Needs attention %d (%d frames to confirm, %d to review again, %d errors)", nAttention, m_JointRes.m_nNeedFrame, nNeedsReview, int(m_JointRes.m_Errors.size()));
+            if (m_bTestPose)
+            {
+                ImGui::TextColored(ImVec4(1, 0.85f, 0.5f, 1), "Preview pose - not saved");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reset pose")) { m_bTestPose = false; m_PullNote.clear(); }
+            }
+            ImGui::Separator();
+
+            const int b = SelectedJoint();
+            if (b < 0 || b >= int(m_JNames.size())) { ImGui::TextDisabled("Select one bone to see and edit its joint."); return; }
+            const auto& L = m_JointRes.m_Limits[b];
+            const auto& Name = m_JNames[b];
+            std::vector<std::string_view> Views(m_JNames.begin(), m_JNames.end());
+            const int Other = FindMirrorBone(Views, b);
+            ImGui::Text("%s", Name.c_str());
+            if (Other >= 0 && Other != b) { ImGui::SameLine(); ImGui::TextDisabled("<-> %s", m_JNames[Other].c_str()); ImGui::SameLine(); ImGui::Checkbox("Symmetry", &m_bJointSymmetry); }
+            const bool bSym = m_bJointSymmetry && Other >= 0 && Other != b;
+            const std::string Mir = bSym ? " -Mirror 1" : "";
+            const xskeleton_desc::joint_override* pO = pDesc->findJointOverride(Name);
+            ImGui::TextDisabled("Source: %s", m_JointRes.m_Source[b].c_str());
+            ImGui::TextDisabled("Review: %s", !pO ? "not reviewed (resolved from the profile)" : pO->m_Review == xskeleton_desc::joint_review::REVIEWED ? "reviewed"
+                                              : pO->m_Review == xskeleton_desc::joint_review::NEEDS_REVIEW ? "needs review (changed since)" : "pending");
+
+            static constexpr const char* Geos[] = { "Free", "Fixed", "Hinge", "Ball" };
+            int Geo = int(L.m_Type);
+            if (ImGui::Combo("Geometry", &Geo, Geos, 4) && Geo != int(L.m_Type)) JointCommand(std::format("JointSet -Bone {} -Geometry {}{}", xeditor::Quote(Name), Geos[Geo], Mir));
+
+            // the numbers (degrees), kept while one is edited and sent as one JointSet when the edit ends
+            constexpr float D = 57.29578f;
+            if (m_JEditBone != b || !ImGui::IsAnyItemActive())
+            {
+                m_JEditBone = b;
+                m_JEdit[0] = L.m_HingeMin * D; m_JEdit[1] = L.m_HingeMax * D;
+                m_JEdit[2] = L.m_SwingCy * D; m_JEdit[3] = L.m_SwingCz * D; m_JEdit[4] = L.m_SwingRy * D; m_JEdit[5] = L.m_SwingRz * D;
+                m_JEdit[6] = L.m_TwistCentre * D; m_JEdit[7] = L.m_TwistHalf * D;
+            }
+            if (L.m_Type == joint_type::HINGE)
+            {
+                ImGui::DragFloat2("Range (min, max)", &m_JEdit[0], 0.5f, -180, 180, "%.1f");
+                if (ImGui::IsItemDeactivatedAfterEdit()) JointCommand(std::format("JointSet -Bone {} -Hinge \"{} {}\"{}", xeditor::Quote(Name), m_JEdit[0], m_JEdit[1], Mir));
+            }
+            if (L.m_Type == joint_type::BALL)
+            {
+                ImGui::DragFloat2("Swing centre (y, z)", &m_JEdit[2], 0.5f, -180, 180, "%.1f");
+                const bool b1 = ImGui::IsItemDeactivatedAfterEdit();
+                ImGui::DragFloat2("Swing radius (y, z)", &m_JEdit[4], 0.5f, 0, 179, "%.1f");
+                const bool b2 = ImGui::IsItemDeactivatedAfterEdit();
+                if (b1 || b2) JointCommand(std::format("JointSet -Bone {} -Swing \"{} {} {} {}\"{}", xeditor::Quote(Name), m_JEdit[2], m_JEdit[3], m_JEdit[4], m_JEdit[5], Mir));
+                ImGui::DragFloat2("Twist (centre, half)", &m_JEdit[6], 0.5f, -180, 180, "%.1f");
+                if (ImGui::IsItemDeactivatedAfterEdit()) JointCommand(std::format("JointSet -Bone {} -Twist \"{} {}\"{}", xeditor::Quote(Name), m_JEdit[6], m_JEdit[7], Mir));
+                static constexpr const char* Axes[] = { "Free", "Limited", "Locked" };
+                int A[3] = { int(L.m_SwingY), int(L.m_SwingZ), int(L.m_Twist) };
+                bool bAx = false;
+                ImGui::SetNextItemWidth(90); bAx |= ImGui::Combo("##sy", &A[0], Axes, 3); ImGui::SameLine();
+                ImGui::SetNextItemWidth(90); bAx |= ImGui::Combo("##sz", &A[1], Axes, 3); ImGui::SameLine();
+                ImGui::SetNextItemWidth(90); bAx |= ImGui::Combo("Swing y, z, twist", &A[2], Axes, 3);
+                if (bAx) JointCommand(std::format("JointSet -Bone {} -Axes \"{} {} {}\"{}", xeditor::Quote(Name), Axes[A[0]], Axes[A[1]], Axes[A[2]], Mir));
+            }
+            if (ImGui::Button("Mark reviewed")) JointCommand(std::format("JointReview -Bone {}{} -By User", xeditor::Quote(Name), Mir));
+            if (ImGui::IsItemHovered()) xeditor::hint::Text("You looked at this joint (bend it, twist it, check the other side): its values are recorded as reviewed. A later change asks for a review again.");
+            ImGui::SameLine();
+            if (ImGui::Button("Reset to Auto")) JointCommand(std::format("JointReset -Bone {}{}", xeditor::Quote(Name), Mir));
+            if (Other >= 0 && Other != b) { ImGui::SameLine(); if (ImGui::Button("Mirror to other side")) JointCommand(std::format("JointMirror -Bone {}", xeditor::Quote(Name))); }
+            if (!m_JointMsg.empty()) ImGui::TextWrapped("%s", m_JointMsg.c_str());
         }
 
         // Names over the bones: the hovered and the selected ones, or all of them
