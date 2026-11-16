@@ -339,6 +339,42 @@ namespace xskeleton_editor
         Verts.push_back(VB);
     }
 
+    // A wire shape (0 capsule along Y: Radius + HalfSegment, 1 sphere: Radius, 2 box: HalfExtents) at a world frame (P, Q), as line pairs:
+    // the ragdoll's bodies, the animation preview's props - one look for every shape drawn over the bones
+    inline void EmitWireShape(std::vector<e19::draw_vert>& Verts, int Kind, float Radius, float HalfSegment, const xmath::fvec3& HalfExtents, const xmath::fvec3& P, const xmath::fquat& Q, std::uint32_t C)
+    {
+        auto Seg = [&](const xmath::fvec3& a, const xmath::fvec3& b) { EmitSegment(Verts, P + Q * a, P + Q * b, C, C); };
+        constexpr int N = 20; constexpr float Pi = 3.14159265f;
+        auto Arc = [&](const xmath::fvec3& Center, const xmath::fvec3& U, const xmath::fvec3& Vv, float R, float A0, float A1)
+        {
+            for (int i = 0; i < N; ++i)
+            {
+                const float a = A0 + (A1 - A0) * float(i) / N, b = A0 + (A1 - A0) * float(i + 1) / N;
+                Seg(Center + U * (R * std::cos(a)) + Vv * (R * std::sin(a)), Center + U * (R * std::cos(b)) + Vv * (R * std::sin(b)));
+            }
+        };
+        const xmath::fvec3 X(1, 0, 0), Y(0, 1, 0), Z(0, 0, 1);
+        if (Kind == 0)
+        {
+            const float r = Radius, h = HalfSegment;
+            const xmath::fvec3 Top = Y * h, Bot = Y * -h;
+            Arc(Top, X, Z, r, 0, 2 * Pi); Arc(Bot, X, Z, r, 0, 2 * Pi);
+            Seg(Top + X * r, Bot + X * r); Seg(Top - X * r, Bot - X * r); Seg(Top + Z * r, Bot + Z * r); Seg(Top - Z * r, Bot - Z * r);
+            Arc(Top, X, Y, r, 0, Pi); Arc(Top, Z, Y, r, 0, Pi); Arc(Bot, X, Y, r, Pi, 2 * Pi); Arc(Bot, Z, Y, r, Pi, 2 * Pi);
+        }
+        else if (Kind == 1)
+        {
+            const xmath::fvec3 O(0, 0, 0);
+            Arc(O, X, Y, Radius, 0, 2 * Pi); Arc(O, Y, Z, Radius, 0, 2 * Pi); Arc(O, Z, X, Radius, 0, 2 * Pi);
+        }
+        else
+        {
+            const auto& H = HalfExtents;
+            auto Pt = [&](int i) { return xmath::fvec3((i & 1) ? H.m_X : -H.m_X, (i & 2) ? H.m_Y : -H.m_Y, (i & 4) ? H.m_Z : -H.m_Z); };
+            for (int i = 0; i < 8; ++i) for (int b = 1; b < 8; b <<= 1) if (!(i & b)) Seg(Pt(i), Pt(i | b));
+        }
+    }
+
     // Virtual bones are dashed by only emitting alternating sub-segments along the edge - LINE_LIST
     // has no native dash support, so this approximates it geometrically.
     inline void EmitEdge(std::vector<e19::draw_vert>& Verts, const xmath::fvec3& A, const xmath::fvec3& B, bool bDashed, const wedge_style& Style, bool bSelected, bool bHovered, std::uint32_t BaseColor)
