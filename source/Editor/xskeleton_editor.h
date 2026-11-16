@@ -16,6 +16,7 @@
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_thumbnail.h"
 #include "plugins/xskeleton.plugin/source/xskeleton_descriptor.h"
 #include "plugins/xskeleton.plugin/source/xskeleton_joints.h"
+#include "plugins/xskeleton.plugin/source/Editor/xskeleton_posing_handles.h"
 #include "plugins/xskeleton.plugin/source/xskeleton_joint_evidence.h"
 #include <filesystem>
 #include <array>
@@ -2368,10 +2369,9 @@ namespace xskeleton_editor
             if (c < 0 || m_JCheckT >= 0) return;
             ImVec2 Hs;
             if (!ProjectView(m_Scaled[c].m_Position, Min, Size, Hs)) return;
-            const float dx = Mouse.x - Hs.x, dy = Mouse.y - Hs.y;
-            m_bPullHover = !m_bPulling && m_JHandleHover < 0 && m_JDrag < 0 && dx * dx + dy * dy < 100.0f;
+            m_bPullHover = !m_bPulling && m_JHandleHover < 0 && m_JDrag < 0 && handles::Near(Mouse, Hs);
             m_HandleScreen = Hs;
-            pDraw->AddCircleFilled(Hs, m_bPullHover || m_bPulling ? 8.0f : 6.0f, IM_COL32(255, 150, 40, 255));
+            handles::Draw(*pDraw, Hs, handles::kind::pull, m_bPullHover, m_bPulling);       // the same handle as the animation editor's Pose tool
 
             if (m_bPulling)
             {

@@ -59,6 +59,8 @@ namespace xskeleton_editor
         }
 
         // A world position to the screen of this panel (for what an editor draws over it: links between bones, labels). False behind the camera. Valid after Render.
+        ImVec2 RectMin()  const noexcept { return m_Min; }       // where the view drew last (a gizmo over it needs the rectangle)
+        ImVec2 RectSize() const noexcept { return m_Size; }
         bool Project(const xmath::fvec3& P, ImVec2& Out) const noexcept
         {
             const xmath::fvec4 Clip = m_Scene.m_View.getW2C() * xmath::fvec4(P, 1.0f);
