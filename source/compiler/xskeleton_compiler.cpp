@@ -220,7 +220,39 @@ namespace xskeleton_compiler
 
             if (auto Err = BuildJoints(Bones); Err) return Err;
 
+            BuildMirror(Bones);
+
             return {};
+        }
+
+        //--------------------------------------------------------------------------------------
+        // The mirror table (a clip played mirrored at runtime: no second clip). Pairs by name (xanimation::FindMirrorBone), the plane from the
+        // character's facing; an asymmetric hierarchy gets no table (a note says why) - mirroring is then unavailable, nothing else changes.
+        void BuildMirror(const std::vector<merged_bone>& Bones)
+        {
+            const int N = static_cast<int>(Bones.size());
+            std::vector<std::string_view> Names(N); std::vector<std::int32_t> Parents(N), Mirror(N); xanimation::pose Rest; Rest.resize(N);
+            for (int i = 0; i < N; ++i)
+            {
+                Names[i] = Bones[i].m_Name; Parents[i] = Bones[i].m_iParent;
+                Rest.m_Position[i] = Bones[i].m_BindTranslation; Rest.m_Rotation[i] = Bones[i].m_BindRotation.NormalizeSafeCopy(); Rest.m_Scale[i] = Bones[i].m_BindScale;
+            }
+            const xanimation::skeleton_view SV{ Parents };
+            int nPairs = 0;
+            for (int i = 0; i < N; ++i) { const int m = xanimation::FindMirrorBone(Names, i); Mirror[i] = m < 0 ? i : m; nPairs += m > i; }
+            float Worst = 0;
+            const xmath::fvec3 Normal = xanimation::MirrorNormalFromPairs(SV, Mirror, Rest, &Worst);
+            xanimation::mirror_table T;
+            if (auto E = xanimation::BuildMirrorTable(SV, Mirror, Rest, Normal, T); !E.empty() || nPairs == 0)
+            {
+                LogMessage(xresource_pipeline::msg_type::INFO, nPairs == 0 ? std::string("Mirror: no left/right bone pairs by name, no mirror table") : std::format("Mirror: no table ({})", E));
+                return;
+            }
+            m_FinalSkeleton.m_nMirror = static_cast<std::uint16_t>(N);
+            m_FinalSkeleton.m_pMirror = new std::int16_t[N];
+            for (int i = 0; i < N; ++i) m_FinalSkeleton.m_pMirror[i] = static_cast<std::int16_t>(Mirror[i]);
+            m_FinalSkeleton.m_MirrorNormal[0] = Normal.m_X; m_FinalSkeleton.m_MirrorNormal[1] = Normal.m_Y; m_FinalSkeleton.m_MirrorNormal[2] = Normal.m_Z;
+            LogMessage(xresource_pipeline::msg_type::INFO, std::format("Mirror: {} left/right pairs, plane normal ({:.3f}, {:.3f}, {:.3f}), rest symmetric to {:.2f} mm", nPairs, Normal.m_X, Normal.m_Y, Normal.m_Z, Worst * 1000.0f));
         }
 
         //--------------------------------------------------------------------------------------
@@ -713,7 +745,7 @@ namespace xskeleton_compiler
                 xskeleton::skeleton S; S.Initialize();
                 S.m_nBones = 2; S.m_pBones = new xskeleton::skeleton::bone[2]; S.m_pBoneNames = new xskeleton::skeleton::name[2]; S.m_pBoneRests = new xskeleton::skeleton::rest[2];
                 S.m_pBones[1].m_iParent = 0; S.m_nLODs = 1; S.m_pLODBoneCount = new std::uint16_t[1]{ 2 };
-                if (bWith) { S.m_nJoints = 2; S.m_pJoints = new xskeleton::skeleton::joint[2]; S.m_pJoints[1] = xskeleton_joints::ToRuntime(R2.m_Limits[Leg]); }
+                if (bWith) { S.m_nJoints = 2; S.m_pJoints = new xskeleton::skeleton::joint[2]; S.m_pJoints[1] = xskeleton_joints::ToRuntime(R2.m_Limits[Leg]); S.m_nMirror = 2; S.m_pMirror = new std::int16_t[2]{ 0, 1 }; S.m_MirrorNormal[0] = 0.6f; S.m_MirrorNormal[2] = -0.8f; }
                 const auto File = (Dir / (bWith ? L"with.bin" : L"without.bin")).wstring();
                 xserializer::stream W;
                 const bool Saved = !W.Save(File, S, xserializer::compression_level::FAST);
@@ -724,7 +756,9 @@ namespace xskeleton_compiler
                 if (Loaded)
                 {
                     if (bWith) Check(pS->m_nJoints == 2 && pS->m_pJoints[1].m_Type == 2 && pS->m_pJoints[1].m_HingeMax == xskeleton_joints::ToRuntime(R2.m_Limits[Leg]).m_HingeMax && pS->m_pJoints[1].m_Frame[3] == xskeleton_joints::ToRuntime(R2.m_Limits[Leg]).m_Frame[3], "the joint array comes back field for field");
+                    if (bWith) Check(pS->m_nMirror == 2 && pS->m_pMirror[1] == 1 && pS->m_MirrorNormal[0] == 0.6f && pS->m_MirrorNormal[2] == -0.8f, "the mirror table comes back");
                     else Check(pS->m_nJoints == 0 && pS->getJoints().empty(), "[JL-001] no array: every joint free");
+                    if (!bWith) Check(pS->getMirror().empty(), "no mirror table: none comes back");
                     xserializer::default_memory_handler_v.Free(xserializer::mem_type{ .m_bUnique = true }, pS);     // one block: the arrays live inside it
                 }
             }

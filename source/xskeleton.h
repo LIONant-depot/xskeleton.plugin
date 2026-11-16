@@ -89,7 +89,7 @@ namespace xskeleton
 
     struct skeleton
     {
-        inline static constexpr auto xserializer_version_v = 2;     // 2: the joint array (limits)
+        inline static constexpr auto xserializer_version_v = 3;     // 2: the joint array (limits); 3: the mirror table
 
         // Hot: read every frame, for every bone, while walking the hierarchy and building skin matrices.
         // Fields ordered by alignment (largest/most-aligned first) to keep this struct - and the cache
@@ -162,6 +162,7 @@ namespace xskeleton
         inline std::span<mask_group>            getMaskGroups           (void)                           const   noexcept { return { m_pMaskGroups, m_nMaskGroups }; }
         inline std::span<mask>                  getMaskWeights          (int iGroup)                     const   noexcept { return { m_pMasks + static_cast<std::size_t>(iGroup) * m_nBones, m_nBones }; }
         inline std::span<joint>                 getJoints               (void)                           const   noexcept { return { m_pJoints, m_nJoints }; }     // empty: no limits
+        inline std::span<std::int16_t>          getMirror               (void)                           const   noexcept { return { m_pMirror, m_nMirror }; }     // empty: no mirror (asymmetric skeleton)
 
         bone*                m_pBones            {nullptr};   // m_nBones entries. Hot - see bone's own comment.
         name*                m_pBoneNames        {nullptr};   // m_nBones entries, parallel to m_pBones.
@@ -170,10 +171,14 @@ namespace xskeleton
         mask_group*          m_pMaskGroups       {nullptr};   // m_nMaskGroups entries
         mask*                m_pMasks            {nullptr};   // m_nMaskGroups * m_nBones entries; group g's weights are m_pMasks[g*m_nBones .. (g+1)*m_nBones)
         joint*               m_pJoints           {nullptr};   // m_nJoints entries: 0 (limits off) or m_nBones
+        std::int16_t*        m_pMirror           {nullptr};   // m_nMirror entries: 0 (no mirror) or m_nBones: the bone each bone takes its motion from when a clip plays
+                                                          // mirrored (itself: no side). The runtime builds xanimation::mirror_table from it, the rest pose and m_MirrorNormal.
+        float                m_MirrorNormal[3]   {1, 0, 0};   // the mirror plane (through the model origin): the character's lateral axis
         std::uint16_t         m_nBones            {0};
         std::uint16_t         m_nLODs             {0};
         std::uint16_t         m_nMaskGroups       {0};
         std::uint16_t         m_nJoints           {0};
+        std::uint16_t         m_nMirror           {0};
     };
 
     //-------------------------------------------------------------------------
@@ -201,6 +206,7 @@ namespace xskeleton
         if (m_pMaskGroups)      delete[] m_pMaskGroups;
         if (m_pMasks)           delete[] m_pMasks;
         if (m_pJoints)          delete[] m_pJoints;
+        if (m_pMirror)          delete[] m_pMirror;
 
         Initialize();
     }
@@ -320,6 +326,9 @@ namespace xserializer::io_functions
             || (Err = Stream.Serialize(Skeleton.m_pMasks,          static_cast<std::size_t>(Skeleton.m_nMaskGroups) * Skeleton.m_nBones))
             || (Err = Stream.Serialize(Skeleton.m_nJoints))
             || (Err = Stream.Serialize(Skeleton.m_pJoints,         Skeleton.m_nJoints))
+            || (Err = Stream.Serialize(Skeleton.m_nMirror))
+            || (Err = Stream.Serialize(Skeleton.m_pMirror,         Skeleton.m_nMirror))
+            || (Err = Stream.Serialize(Skeleton.m_MirrorNormal[0])) || (Err = Stream.Serialize(Skeleton.m_MirrorNormal[1])) || (Err = Stream.Serialize(Skeleton.m_MirrorNormal[2]))
             ;
         return Err;
     }
