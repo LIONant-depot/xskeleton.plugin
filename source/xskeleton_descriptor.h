@@ -203,7 +203,9 @@ namespace xskeleton_desc
         xmath::fvec2    m_SwingCentre   = { 0, 0 };                       // degrees (y, z)
         xmath::fvec2    m_SwingRadius   = { 45, 45 };                     // degrees (y, z)
         float           m_TwistCentre   = 0, m_TwistHalf = 45;            // degrees
-        joint_review    m_Review        = joint_review::PENDING;
+        xmath::fvec3    m_Relaxed       = { 0, 0, 0 };                    // the relaxed pose (C64), degrees: swing y, swing z, twist (a hinge: z); 0 = the rest
+        float           m_Tone          = 1;                              // how strongly the joint returns to it (x the body's passive stiffness; 0: no preference)
+        joint_review    m_Review       = joint_review::PENDING;
         std::string     m_ReviewedHash  = {};                             // the hash of the fields reviewed: a later change invalidates the review
         std::string     m_Provenance    = {};                             // where the values came from (a preset, the clips analyzed, a mirror)
 
@@ -223,6 +225,8 @@ namespace xskeleton_desc
         , obj_member<"SwingRadius",  &joint_override::m_SwingRadius >
         , obj_member<"TwistCentre",  &joint_override::m_TwistCentre >
         , obj_member<"TwistHalf",    &joint_override::m_TwistHalf >
+        , obj_member<"Relaxed",      &joint_override::m_Relaxed,  member_help<"The relaxed pose (degrees: swing y, swing z, twist; a hinge uses z): where the joint settles with no effort, like tendons and muscles at rest. 0 0 0 = the skeleton's rest. Read by the ragdoll's passive spring.">>
+        , obj_member<"Tone",         &joint_override::m_Tone,     member_help<"How strongly the joint returns to its relaxed pose: a scale of the body's passive stiffness (1 normal, 0 no preference).">>
         , obj_member<"Review",       &joint_override::m_Review,   member_enum_span<joint_review_v> >
         , obj_member<"ReviewedHash", &joint_override::m_ReviewedHash, member_flags<flags::SHOW_READONLY> >
         , obj_member<"Provenance",   &joint_override::m_Provenance >

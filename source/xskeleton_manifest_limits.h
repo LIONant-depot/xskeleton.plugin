@@ -25,6 +25,7 @@ namespace xskeleton_desc
             O.m_HingeMin = J.m_HingeMin; O.m_HingeMax = J.m_HingeMax;
             O.m_SwingCy = J.m_SwingCy; O.m_SwingCz = J.m_SwingCz; O.m_SwingRy = J.m_SwingRy; O.m_SwingRz = J.m_SwingRz;
             O.m_TwistCentre = J.m_TwistCentre; O.m_TwistHalf = J.m_TwistHalf;
+            O.m_Relaxed = xmath::fquat(J.m_RelaxedX, J.m_RelaxedY, J.m_RelaxedZ, J.m_RelaxedW).NormalizeSafeCopy(); O.m_Tone = J.m_Tone;
         }
         return L;
     }

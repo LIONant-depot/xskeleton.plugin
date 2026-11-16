@@ -93,6 +93,8 @@ namespace xskeleton_desc
             float   m_HingeMin = 0, m_HingeMax = 0;
             float   m_SwingCy = 0, m_SwingCz = 0, m_SwingRy = 0, m_SwingRz = 0;
             float   m_TwistCentre = 0, m_TwistHalf = 0;
+            float   m_RelaxedX = 0, m_RelaxedY = 0, m_RelaxedZ = 0, m_RelaxedW = 1;     // the relaxed joint rotation J (C64; identity: the rest)
+            float   m_Tone = 1;                                                     // its stiffness scale
             XPROPERTY_DEF
             ( "joint_entry", joint_entry
             , obj_member<"Type",   &joint_entry::m_Type,   member_flags<flags::SHOW_READONLY> >
@@ -111,6 +113,11 @@ namespace xskeleton_desc
             , obj_member<"SwingRz", &joint_entry::m_SwingRz, member_flags<flags::SHOW_READONLY> >
             , obj_member<"TwistCentre", &joint_entry::m_TwistCentre, member_flags<flags::SHOW_READONLY> >
             , obj_member<"TwistHalf",   &joint_entry::m_TwistHalf,   member_flags<flags::SHOW_READONLY> >
+            , obj_member<"RelaxedX",    &joint_entry::m_RelaxedX,    member_flags<flags::SHOW_READONLY> >
+            , obj_member<"RelaxedY",    &joint_entry::m_RelaxedY,    member_flags<flags::SHOW_READONLY> >
+            , obj_member<"RelaxedZ",    &joint_entry::m_RelaxedZ,    member_flags<flags::SHOW_READONLY> >
+            , obj_member<"RelaxedW",    &joint_entry::m_RelaxedW,    member_flags<flags::SHOW_READONLY> >
+            , obj_member<"Tone",        &joint_entry::m_Tone,        member_flags<flags::SHOW_READONLY> >
             )
         };
         std::vector<joint_entry>   m_Joints   = {};

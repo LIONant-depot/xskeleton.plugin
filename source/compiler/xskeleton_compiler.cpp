@@ -259,6 +259,9 @@ namespace xskeleton_compiler
                     , .m_FrameX = J.m_Frame[0], .m_FrameY = J.m_Frame[1], .m_FrameZ = J.m_Frame[2], .m_FrameW = J.m_Frame[3]
                     , .m_HingeMin = J.m_HingeMin, .m_HingeMax = J.m_HingeMax, .m_SwingCy = J.m_SwingCy, .m_SwingCz = J.m_SwingCz
                     , .m_SwingRy = J.m_SwingRy, .m_SwingRz = J.m_SwingRz, .m_TwistCentre = J.m_TwistCentre, .m_TwistHalf = J.m_TwistHalf };
+                // the relaxed pose (C64) is not in the runtime joint (no reader yet): the manifest takes it from the resolved limit
+                const auto& Rx = R.m_Limits[i].m_Relaxed;
+                E.m_RelaxedX = Rx.m_X; E.m_RelaxedY = Rx.m_Y; E.m_RelaxedZ = Rx.m_Z; E.m_RelaxedW = Rx.m_W; E.m_Tone = R.m_Limits[i].m_Tone;
             }
             LogMessage(xresource_pipeline::msg_type::INFO, std::format("Joint limits on ({}): {} from overrides, {} from the preset ({} frames need confirmation), {} unspecified (free)"
                 , xskeleton_joints::ProfileName(m_Descriptor.m_JointProfile), R.m_nOverride, R.m_nPreset, R.m_nNeedFrame, R.m_nUnspecified));
@@ -272,6 +275,8 @@ namespace xskeleton_compiler
                 std::string Lim;
                 if (L.m_Type == xanimation::joint_type::HINGE) Lim = std::format("{:.1f}..{:.1f}", L.m_HingeMin * D, L.m_HingeMax * D);
                 if (L.m_Type == xanimation::joint_type::BALL)  Lim = std::format("swing {:.1f},{:.1f} r {:.1f},{:.1f}  twist {:.1f} +- {:.1f}", L.m_SwingCy * D, L.m_SwingCz * D, L.m_SwingRy * D, L.m_SwingRz * D, L.m_TwistCentre * D, L.m_TwistHalf * D);
+                if (const auto Rx = xskeleton_joints::RelaxedAngles(L.m_Type, L.m_Relaxed); Rx.LengthSq() > 1e-6f || L.m_Tone != 1.0f)
+                    Lim += std::format("  relaxed {:.1f},{:.1f},{:.1f} tone {:.2f}", Rx.m_X, Rx.m_Y, Rx.m_Z, L.m_Tone);
                 Txt += std::format("{}\t{}\t{}\t{}\n", Names[i], R.m_Source[i], Types[static_cast<int>(L.m_Type)], Lim);
             }
             if (std::FILE* f = _wfopen(std::format(L"{}\\JointLimits.txt", m_ResourceLogPath).c_str(), L"wb")) { std::fwrite(Txt.data(), 1, Txt.size(), f); std::fclose(f); }

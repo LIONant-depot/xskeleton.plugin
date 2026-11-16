@@ -410,6 +410,8 @@ namespace xskeleton_editor
                     m_hE    = m_Parser.addOption("Axes",     "\"swing_y swing_z twist\": each Free, Limited or Locked", false, 1);
                     m_hF    = m_Parser.addOption("Frame",    "\"x y z w\" (the joint frame in the bone's frame) or Suggested", false, 1);
                     m_hG    = m_Parser.addOption("Source",   "Custom (default), Fitted or Preset", false, 1);
+                    m_hH    = m_Parser.addOption("Relaxed",  "\"swing_y swing_z twist\" degrees: the relaxed pose (a hinge: its angle is the z); 0 0 0 = the rest", false, 1);
+                    m_hI    = m_Parser.addOption("Tone",     "how strongly it returns to the relaxed pose (x the body's passive stiffness; 0: none)", false, 1);
                     m_hMirror = m_Parser.addOption("Mirror", "1: the other side's bone gets the mirrored limit in the same step", false, 1);
                     m_hForce  = m_Parser.addOption("Force",  "1: overwrite a reviewed other side that differs", false, 1);
                     break;
@@ -425,7 +427,7 @@ namespace xskeleton_editor
                 }
             }
             std::string Query() noexcept override { return m_Session.RunJoint(*this); }
-            xcmdline::parser::handle m_hBone, m_hA, m_hB, m_hC, m_hD, m_hE, m_hF, m_hG, m_hMirror, m_hForce;
+            xcmdline::parser::handle m_hBone, m_hA, m_hB, m_hC, m_hD, m_hE, m_hF, m_hG, m_hH, m_hI, m_hMirror, m_hForce;
         };
         joint_cmd                                               m_JointsInfo, m_JointSet, m_JointReset, m_JointMirror, m_JointReview, m_JointLimitsMode, m_JointsView, m_JointAnalyze, m_JointApplyFit;
 
@@ -1032,7 +1034,7 @@ namespace xskeleton_editor
             {
                 std::string Geo, Hinge, Swing, Twist, Axes, Frame, Source;
                 GetArg(Cmd.m_Parser, Cmd.m_hA, Geo); GetArg(Cmd.m_Parser, Cmd.m_hB, Hinge); GetArg(Cmd.m_Parser, Cmd.m_hC, Swing); GetArg(Cmd.m_Parser, Cmd.m_hD, Twist);
-                GetArg(Cmd.m_Parser, Cmd.m_hE, Axes); GetArg(Cmd.m_Parser, Cmd.m_hF, Frame); GetArg(Cmd.m_Parser, Cmd.m_hG, Source);
+                GetArg(Cmd.m_Parser, Cmd.m_hE, Axes); GetArg(Cmd.m_Parser, Cmd.m_hF, Frame); GetArg(Cmd.m_Parser, Cmd.m_hG, Source); std::string Relaxed, Tone; GetArg(Cmd.m_Parser, Cmd.m_hH, Relaxed); GetArg(Cmd.m_Parser, Cmd.m_hI, Tone);
                 std::string Note;
                 const auto Err = CommitJointEdit(std::format("Joint limit {}", BoneName), [&](desc& D) -> std::string
                 {
@@ -1061,6 +1063,8 @@ namespace xskeleton_editor
                         if (xstrtool::findI(Frame, "sugg") == 0) O.m_bFrameSet = false;
                         else { auto V = Floats(Frame); if (V.size() != 4) return "-Frame: \"x y z w\" or Suggested"; O.m_bFrameSet = true; O.m_Frame = xmath::fquat(V[0], V[1], V[2], V[3]).NormalizeSafeCopy(); }
                     }
+                    if (!Relaxed.empty()) { auto V = Floats(Relaxed); if (V.size() != 3) return "-Relaxed: \"swing_y swing_z twist\""; O.m_Relaxed = { V[0], V[1], V[2] }; }
+                    if (!Tone.empty()) { auto V = Floats(Tone); if (V.size() != 1 || V[0] < 0) return "-Tone: one number >= 0"; O.m_Tone = V[0]; }
                     if (!Source.empty()) O.m_Source = xstrtool::findI(Source, "fit") == 0 ? xskeleton_desc::joint_source::FITTED : xstrtool::findI(Source, "pre") == 0 ? xskeleton_desc::joint_source::PRESET : xskeleton_desc::joint_source::CUSTOM;
                     // validated before it is accepted (atomic: a bad field changes nothing)
                     if (const char* pBad = xanimation::Validate(xskeleton_joints::LimitFromOverride(O, Rest.m_Rotation[iBone], R.m_Limits[iBone].m_Frame)); pBad) return pBad;

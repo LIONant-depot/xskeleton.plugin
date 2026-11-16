@@ -23,6 +23,22 @@ namespace xskeleton_joints
 
     inline constexpr float deg_v = 3.14159265f / 180.0f;
 
+    // The relaxed pose (C64) as the user edits it - degrees (swing y, swing z, twist; a hinge turns about z, so only z) - and as the joint
+    // rotation J the evaluator and the ragdoll use. FIXED: always the rest.
+    inline xmath::fquat RelaxedRotation(xanimation::joint_type T, const xmath::fvec3& Deg) noexcept
+    {
+        if (T == xanimation::joint_type::FIXED) return xmath::fquat::fromIdentity();
+        if (T == xanimation::joint_type::HINGE) return xanimation::details::AxisAngle(xanimation::details::AxZ, Deg.m_Z * deg_v);
+        return xanimation::details::MakeBall(Deg.m_X * deg_v, Deg.m_Y * deg_v, Deg.m_Z * deg_v);
+    }
+    inline xmath::fvec3 RelaxedAngles(xanimation::joint_type T, const xmath::fquat& J) noexcept
+    {
+        if (T == xanimation::joint_type::FIXED) return { 0, 0, 0 };
+        if (T == xanimation::joint_type::HINGE) { const auto Q = xanimation::details::Canon(J); return { 0, 0, 2.0f * std::atan2(Q.m_Z, Q.m_W) / deg_v }; }
+        float Sy, Sz, Tw; bool bSing; xanimation::details::SplitBall(J, Sy, Sz, Tw, bSing);
+        return { Sy / deg_v, Sz / deg_v, Tw / deg_v };
+    }
+
     // the humanoid preset version a profile pins (0: none) and its name
     inline int ProfileVersion(xskeleton_desc::joint_profile P) noexcept { return P == xskeleton_desc::joint_profile::HUMANOID_V1 ? 1 : P == xskeleton_desc::joint_profile::HUMANOID_V2 ? 2 : 0; }
     // Pinning happens on activation: a skeleton with limits OFF always previews the newest preset (whatever JointProfile says); turning
@@ -42,6 +58,7 @@ namespace xskeleton_joints
         L.m_SwingY = static_cast<xanimation::axis_motion>(O.m_SwingY); L.m_SwingZ = static_cast<xanimation::axis_motion>(O.m_SwingZ); L.m_Twist = static_cast<xanimation::axis_motion>(O.m_Twist);
         L.m_SwingCy = O.m_SwingCentre.m_X * deg_v; L.m_SwingCz = O.m_SwingCentre.m_Y * deg_v; L.m_SwingRy = O.m_SwingRadius.m_X * deg_v; L.m_SwingRz = O.m_SwingRadius.m_Y * deg_v;
         L.m_TwistCentre = O.m_TwistCentre * deg_v; L.m_TwistHalf = O.m_TwistHalf * deg_v;
+        L.m_Relaxed = RelaxedRotation(L.m_Type, O.m_Relaxed); L.m_Tone = O.m_Tone;
         return L;
     }
 
@@ -54,6 +71,7 @@ namespace xskeleton_joints
         O.m_SwingY = static_cast<xskeleton_desc::joint_axis>(L.m_SwingY); O.m_SwingZ = static_cast<xskeleton_desc::joint_axis>(L.m_SwingZ); O.m_Twist = static_cast<xskeleton_desc::joint_axis>(L.m_Twist);
         O.m_SwingCentre = { L.m_SwingCy / deg_v, L.m_SwingCz / deg_v }; O.m_SwingRadius = { L.m_SwingRy / deg_v, L.m_SwingRz / deg_v };
         O.m_TwistCentre = L.m_TwistCentre / deg_v; O.m_TwistHalf = L.m_TwistHalf / deg_v;
+        O.m_Relaxed = RelaxedAngles(L.m_Type, L.m_Relaxed); O.m_Tone = L.m_Tone;
     }
 
     // what a review vouches for: the override's geometry and frame (not its review state, provenance or label)
@@ -132,9 +150,10 @@ namespace xskeleton_joints
         std::string S = std::format("{}\t{}\n", int(D.m_JointLimits), int(D.m_JointProfile));
         auto Clean = [](std::string T) { for (auto& c : T) if (c == '\t' || c == '\n' || c == '\r') c = ' '; return T; };
         for (const auto& O : D.m_JointOverrides)
-            S += std::format("{}\t{}\t{}\t{}\t{} {} {} {}\t{} {}\t{} {} {}\t{} {} {} {}\t{} {}\t{}\t{}\t{}\n", Clean(O.m_BoneName), int(O.m_Source), int(O.m_Geometry), int(O.m_bFrameSet)
+            S += std::format("{}\t{}\t{}\t{}\t{} {} {} {}\t{} {}\t{} {} {}\t{} {} {} {}\t{} {}\t{}\t{}\t{}\t{} {} {}\t{}\n", Clean(O.m_BoneName), int(O.m_Source), int(O.m_Geometry), int(O.m_bFrameSet)
                 , O.m_Frame.m_X, O.m_Frame.m_Y, O.m_Frame.m_Z, O.m_Frame.m_W, O.m_HingeMin, O.m_HingeMax, int(O.m_SwingY), int(O.m_SwingZ), int(O.m_Twist)
-                , O.m_SwingCentre.m_X, O.m_SwingCentre.m_Y, O.m_SwingRadius.m_X, O.m_SwingRadius.m_Y, O.m_TwistCentre, O.m_TwistHalf, int(O.m_Review), Clean(O.m_ReviewedHash), Clean(O.m_Provenance));
+                , O.m_SwingCentre.m_X, O.m_SwingCentre.m_Y, O.m_SwingRadius.m_X, O.m_SwingRadius.m_Y, O.m_TwistCentre, O.m_TwistHalf, int(O.m_Review), Clean(O.m_ReviewedHash), Clean(O.m_Provenance)
+                , O.m_Relaxed.m_X, O.m_Relaxed.m_Y, O.m_Relaxed.m_Z, O.m_Tone);     // the relaxed pose and tone (C64): 14 fields; 12 = older text
         return S;
     }
     inline bool ApplyJointState(xskeleton_desc::descriptor& D, std::string_view S)
@@ -150,7 +169,7 @@ namespace xskeleton_joints
         {
             if (Lines[i].empty()) continue;
             const auto F = Fields(Lines[i]);
-            if (F.size() != 12) return false;
+            if (F.size() != 12 && F.size() != 14) return false;
             xskeleton_desc::joint_override O;
             const auto Fr = Nums(F[4]), Hi = Nums(F[5]), Ax = Nums(F[6]), Sw = Nums(F[7]), Tw = Nums(F[8]), Head = Nums(F[1] + " " + F[2] + " " + F[3] + " " + F[9]);
             if (Fr.size() != 4 || Hi.size() != 2 || Ax.size() != 3 || Sw.size() != 4 || Tw.size() != 2 || Head.size() != 4) return false;
@@ -161,6 +180,12 @@ namespace xskeleton_joints
             O.m_SwingY = static_cast<xskeleton_desc::joint_axis>(int(Ax[0])); O.m_SwingZ = static_cast<xskeleton_desc::joint_axis>(int(Ax[1])); O.m_Twist = static_cast<xskeleton_desc::joint_axis>(int(Ax[2]));
             O.m_SwingCentre = { Sw[0], Sw[1] }; O.m_SwingRadius = { Sw[2], Sw[3] }; O.m_TwistCentre = Tw[0]; O.m_TwistHalf = Tw[1];
             O.m_Review = static_cast<xskeleton_desc::joint_review>(int(Head[3])); O.m_ReviewedHash = F[10]; O.m_Provenance = F[11];
+            if (F.size() == 14)
+            {
+                const auto Rx = Nums(F[12]), To = Nums(F[13]);
+                if (Rx.size() != 3 || To.size() != 1) return false;
+                O.m_Relaxed = { Rx[0], Rx[1], Rx[2] }; O.m_Tone = To[0];
+            }
             V.push_back(std::move(O));
         }
         D.m_JointLimits = static_cast<xskeleton_desc::joint_limits_mode>(int(H[0])); D.m_JointProfile = static_cast<xskeleton_desc::joint_profile>(int(H[1]));
