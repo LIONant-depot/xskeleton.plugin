@@ -83,6 +83,38 @@ namespace xskeleton_desc
         };
         std::vector<mask>          m_Masks    = {};
 
+        // The skeleton's compiled joint limits (JointLimits On; empty when Off), index i = bone i, the fields of xskeleton::skeleton::joint
+        // (the rest rotation is the bone entry's): what an anim package's baked IK keys respect (C59; limits are owned by the skeleton)
+        struct joint_entry
+        {
+            int     m_Type   = 0;                                   // xanimation::joint_type
+            int     m_SwingY = 0, m_SwingZ = 0, m_Twist = 0;       // xanimation::axis_motion
+            float   m_FrameX = 0, m_FrameY = 0, m_FrameZ = 0, m_FrameW = 1;
+            float   m_HingeMin = 0, m_HingeMax = 0;
+            float   m_SwingCy = 0, m_SwingCz = 0, m_SwingRy = 0, m_SwingRz = 0;
+            float   m_TwistCentre = 0, m_TwistHalf = 0;
+            XPROPERTY_DEF
+            ( "joint_entry", joint_entry
+            , obj_member<"Type",   &joint_entry::m_Type,   member_flags<flags::SHOW_READONLY> >
+            , obj_member<"SwingY", &joint_entry::m_SwingY, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"SwingZ", &joint_entry::m_SwingZ, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"Twist",  &joint_entry::m_Twist,  member_flags<flags::SHOW_READONLY> >
+            , obj_member<"FrameX", &joint_entry::m_FrameX, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"FrameY", &joint_entry::m_FrameY, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"FrameZ", &joint_entry::m_FrameZ, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"FrameW", &joint_entry::m_FrameW, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"HingeMin", &joint_entry::m_HingeMin, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"HingeMax", &joint_entry::m_HingeMax, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"SwingCy", &joint_entry::m_SwingCy, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"SwingCz", &joint_entry::m_SwingCz, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"SwingRy", &joint_entry::m_SwingRy, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"SwingRz", &joint_entry::m_SwingRz, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"TwistCentre", &joint_entry::m_TwistCentre, member_flags<flags::SHOW_READONLY> >
+            , obj_member<"TwistHalf",   &joint_entry::m_TwistHalf,   member_flags<flags::SHOW_READONLY> >
+            )
+        };
+        std::vector<joint_entry>   m_Joints   = {};
+
         std::vector<bone_entry>    m_Bones    = {};   // final compiled bone order - index i matches xskeleton::skeleton::m_pBones[i]
         int                        m_NumBones = 0;
 
@@ -119,12 +151,14 @@ namespace xskeleton_desc
         , obj_member<"PostTransformRotationDeg",  &bone_manifest::m_PostTransformRotationDeg,  member_flags<flags::SHOW_READONLY> >
         , obj_member<"PostTransformTranslation",  &bone_manifest::m_PostTransformTranslation,  member_flags<flags::SHOW_READONLY> >
         , obj_member<"Masks",                     &bone_manifest::m_Masks,                     member_flags<flags::SHOW_READONLY> >
+        , obj_member<"Joints",                    &bone_manifest::m_Joints,                    member_flags<flags::SHOW_READONLY> >
         )
     };
     XPROPERTY_REG(bone_manifest)
     XPROPERTY_REG2(anim_bone_entry_, bone_manifest::bone_entry)
     XPROPERTY_REG2(anim_mask_bone_, bone_manifest::mask_bone)
     XPROPERTY_REG2(anim_mask_, bone_manifest::mask)
+    XPROPERTY_REG2(anim_joint_entry_, bone_manifest::joint_entry)
 
     // Where a skeleton's compile writes its manifest, relative to the project: what a consumer (a skin, an anim package) registers as one of its
     // m_Dependencies.m_Assets so that it compiles again whenever its skeleton does (a PreTransform edit, a bone change)

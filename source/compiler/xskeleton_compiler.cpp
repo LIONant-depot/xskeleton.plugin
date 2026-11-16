@@ -250,6 +250,16 @@ namespace xskeleton_compiler
             m_FinalSkeleton.m_nJoints = static_cast<std::uint16_t>(N);
             m_FinalSkeleton.m_pJoints = new xskeleton::skeleton::joint[N];
             for (int i = 0; i < N; ++i) m_FinalSkeleton.m_pJoints[i] = xskeleton_joints::ToRuntime(R.m_Limits[i]);
+            // the same limits in the manifest: an anim package's baked IK keys respect them (C59)
+            m_BoneManifest.m_Joints.resize(N);
+            for (int i = 0; i < N; ++i)
+            {
+                const auto& J = m_FinalSkeleton.m_pJoints[i]; auto& E = m_BoneManifest.m_Joints[i];
+                E = { .m_Type = J.m_Type, .m_SwingY = J.m_SwingY, .m_SwingZ = J.m_SwingZ, .m_Twist = J.m_Twist
+                    , .m_FrameX = J.m_Frame[0], .m_FrameY = J.m_Frame[1], .m_FrameZ = J.m_Frame[2], .m_FrameW = J.m_Frame[3]
+                    , .m_HingeMin = J.m_HingeMin, .m_HingeMax = J.m_HingeMax, .m_SwingCy = J.m_SwingCy, .m_SwingCz = J.m_SwingCz
+                    , .m_SwingRy = J.m_SwingRy, .m_SwingRz = J.m_SwingRz, .m_TwistCentre = J.m_TwistCentre, .m_TwistHalf = J.m_TwistHalf };
+            }
             LogMessage(xresource_pipeline::msg_type::INFO, std::format("Joint limits on ({}): {} from overrides, {} from the preset ({} frames need confirmation), {} unspecified (free)"
                 , xskeleton_joints::ProfileName(m_Descriptor.m_JointProfile), R.m_nOverride, R.m_nPreset, R.m_nNeedFrame, R.m_nUnspecified));
 
