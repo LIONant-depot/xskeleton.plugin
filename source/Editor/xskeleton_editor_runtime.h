@@ -148,9 +148,9 @@ namespace xskeleton_editor
         }
 
         // The ground, all the outlines, then the fills far to near on top (the builder sorted them)
-        void DrawBones(xgpu::cmd_buffer& CmdBuffer) noexcept
+        void DrawBones(xgpu::cmd_buffer& CmdBuffer, bool bGrid = true) noexcept      // bGrid false: something else drew the ground (a skin's own view)
         {
-            DrawGrid(CmdBuffer);
+            if (bGrid) DrawGrid(CmdBuffer);
             DrawLines(CmdBuffer);
             if (!m_nFill) return;
             CmdBuffer.setPipelineInstance(m_FillInstance);

@@ -9,6 +9,7 @@
 #include "source/Tools/Editor/xeditor_descriptor_editor.h"
 #include "source/Tools/Editor/xeditor_camera_toolbar.h"
 #include "source/Tools/Editor/xeditor_transform_gizmo.h"
+#include "xskeleton_bone_tree.h"
 #include "source/Tools/Editor/xeditor_scale_reference.h"
 #include "dependencies/xresource_pipeline_v2/source/editor/xresource_editor_resources.h"
 #include "plugins/xskeleton.plugin/source/Editor/xskeleton_editor_scene.h"
@@ -492,13 +493,11 @@ namespace xskeleton_editor
         bool                                                    m_bLastNormalize = true;
 
         std::set<int>                                           m_Selected;
-        int                                                     m_iScrollTo     = -1;   // the tree scrolls to (and opens down to) this bone once: one hovered or selected in the 3D view
-        std::vector<bool>                                       m_ScrollPath;           // the bones on the way to it (opened)
-        int                                                     m_iLastHover3D  = -1;
-        std::set<int>                                           m_LastSelected;
+        xskeleton_editor::bone_tree                             m_BoneTree;             // the shared bone tree (also the Ragdoll editor's): follows the 3D view's hover and selection
+        std::vector<xskeleton_editor::bone_tree::row>           m_BoneRows;             // its rows this frame (the source hierarchy)
+        std::vector<int>                                        m_BoneRowLOD;           // each row's parent LOD (a lower LOD is what the compiler overrides)
         int                                                     m_iAnchor = -1;
         int                                                     m_iHovered = -1;
-        bool                                                    m_bTreeHovered = false;
         std::string                                             m_RenamingBone, m_RenameBuffer;
         bool                                                    m_bRenameStarted = false;
 
@@ -1198,43 +1197,41 @@ namespace xskeleton_editor
             if (Width > Box) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (Width - Box) * 0.5f);
         }
 
-        void RenderBoneNode(const xskeleton::skeleton& Skeleton, const std::unordered_map<std::string, int>& Compiled, const xskeleton_desc::details::bone& Node, int ParentLOD, int iLayer, std::string& Pending) noexcept
+        // The rows of the shared bone tree (xskeleton_bone_tree.h) from the source hierarchy: folded and pending-delete bones stay visible
+        void BuildBoneRows(const xskeleton::skeleton& Skeleton, const std::unordered_map<std::string, int>& Compiled, const xskeleton_desc::details::bone& Node, int iParent, int ParentLOD) noexcept
         {
-            auto& D = *Desc();
+            const auto& D = *Desc();
             const std::string& Raw = Node.m_Name;
             const auto It = Compiled.find(Raw);
             const int iBone = It == Compiled.end() ? -1 : It->second;
             const auto* pOverride = FindBoneOverride(D.m_RootBone, Raw);
-            const std::string Name = pOverride && !pOverride->m_Rename.empty() ? pOverride->m_Rename : StripVBoneTag(Raw);
+            const bool bDelete = pOverride && pOverride->m_bDeleteBone, bVirtual = pOverride && pOverride->m_Type == xskeleton_desc::bone_type::VIRTUAL;
+            const bool bFolded = iBone == -1 && !bDelete && !Compiled.empty();      // a source node the compiler folded into the joints below it
+            xskeleton_editor::bone_tree::row R;
+            R.m_Name = Raw; R.m_iParent = iParent; R.m_iBone = iBone;
+            R.m_Label = pOverride && !pOverride->m_Rename.empty() ? pOverride->m_Rename : StripVBoneTag(Raw);
+            if (pOverride && pOverride->m_LODLevel > 0) R.m_Label += std::format("  [LOD{}]", pOverride->m_LODLevel);
+            if (iBone != -1) if (const int Eff = GetBoneLODLevel(Skeleton, iBone); Eff != (pOverride ? pOverride->m_LODLevel : 0)) R.m_Label += std::format("  (compiled: LOD{})", Eff);
+            if (bDelete) R.m_Label += "  (pending delete)";
+            if (bFolded) R.m_Label += "  (source only - folded at compile)";
+            R.m_TextColor = bDelete ? IM_COL32(255, 90, 90, 255) : bVirtual ? IM_COL32(255, 180, 84, 255) : bFolded ? ImGui::GetColorU32(ImGuiCol_TextDisabled) : 0;
+            const int Row = int(m_BoneRows.size());
+            m_BoneRows.push_back(std::move(R)); m_BoneRowLOD.push_back(ParentLOD);
+            const int Effective = std::max(ParentLOD, pOverride ? pOverride->m_LODLevel : 0);
+            for (auto& Child : Node.m_Children) BuildBoneRows(Skeleton, Compiled, Child, Row, Effective);
+        }
 
-            const bool bSelected = iBone != -1 && m_Selected.count(iBone), bHovered = iBone != -1 && iBone == m_iHovered, bKids = !Node.m_Children.empty();
+        // What the Skeleton editor adds to a shared tree row: the intent icon, rename, the context menu, the Sock/Virt/Del/LOD/Weight columns
+        void BoneRowExtras(const xskeleton::skeleton& Skeleton, int Row, int iLayer, std::string& Pending) noexcept
+        {
+            auto& D = *Desc();
+            const auto& R = m_BoneRows[Row];
+            const std::string& Raw = R.m_Name; const int iBone = R.m_iBone, ParentLOD = m_BoneRowLOD[Row];
+            const auto* pOverride = FindBoneOverride(D.m_RootBone, Raw);
+            const std::string Name = pOverride && !pOverride->m_Rename.empty() ? pOverride->m_Rename : StripVBoneTag(Raw);
+            const bool bSelected = iBone != -1 && m_Selected.count(iBone);
             const bool bDelete = pOverride && pOverride->m_bDeleteBone, bVirtual = pOverride && pOverride->m_Type == xskeleton_desc::bone_type::VIRTUAL, bExpose = pOverride && pOverride->m_bExpose;
             const bool bRenaming = m_RenamingBone == Raw;
-
-            ImGui::TableNextRow();
-            if (bHovered) ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_HeaderHovered));
-            ImGui::TableSetColumnIndex(0);
-
-            ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_DefaultOpen;
-            if (bSelected) Flags |= ImGuiTreeNodeFlags_Selected;
-            if (!bKids)    Flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-
-            // A source node the compiler folded into the joints below it: real in the file, not in the runtime skeleton
-            const bool bFolded = iBone == -1 && !bDelete && !Compiled.empty();
-            if (bDelete)       ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 90, 90, 255));
-            else if (bVirtual) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 180, 84, 255));
-            else if (bFolded)  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
-            std::string Label = Name;
-            if (pOverride && pOverride->m_LODLevel > 0) Label += std::format("  [LOD{}]", pOverride->m_LODLevel);
-            if (iBone != -1) if (const int Eff = GetBoneLODLevel(Skeleton, iBone); Eff != (pOverride ? pOverride->m_LODLevel : 0)) Label += std::format("  (compiled: LOD{})", Eff);
-            if (bDelete) Label += "  (pending delete)";
-            if (bFolded) Label += "  (source only - folded at compile)";
-            if (m_iScrollTo >= 0 && iBone >= 0 && iBone < int(m_ScrollPath.size()) && m_ScrollPath[iBone]) ImGui::SetNextItemOpen(true);
-            const bool bOpen = ImGui::TreeNodeEx(Raw.c_str(), Flags, "%s", bRenaming ? "" : Label.c_str());
-            if (iBone >= 0 && iBone == m_iScrollTo) { if (!ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f); m_iScrollTo = -1; }
-            if (bDelete || bVirtual || bFolded) ImGui::PopStyleColor();
-
-            if (ImGui::IsItemHovered()) { m_iHovered = iBone; m_bTreeHovered = true; }
 
             // The bone's intent: its icon at the end of the name cell (dimmed while only suggested), spelled out on hover
             {
@@ -1267,11 +1264,7 @@ namespace xskeleton_editor
                 else if (ImGui::IsItemDeactivated()) m_RenamingBone.clear();
                 ImGui::PopID();
             }
-            else
-            {
-                if (ImGui::IsItemClicked() && iBone != -1) Select(iBone, ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyShift);
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) { m_RenamingBone = Raw; m_bRenameStarted = true; m_RenameBuffer = Name; }
-            }
+            else if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) { m_RenamingBone = Raw; m_bRenameStarted = true; m_RenameBuffer = Name; }
 
             ImGui::PushID(Raw.c_str());
             if (ImGui::BeginPopupContextItem("BoneRowContextMenu"))
@@ -1306,7 +1299,7 @@ namespace xskeleton_editor
             }
             ImGui::PopID();
 
-            auto Check = [&](int Column, const char* pId, bool bValue, const char* pCommand, const char* pOption)
+            auto Check = [&](int Column, const char* pId, bool bValue, const char* pOption)
             {
                 ImGui::TableSetColumnIndex(Column);
                 ImGui::PushID(Raw.c_str());
@@ -1314,24 +1307,18 @@ namespace xskeleton_editor
                 bool V = bValue;
                 if (ImGui::Checkbox(pId, &V)) Pending = std::format("SetBone -Bones {} -{} {}", EditTargets(Skeleton, iBone, Raw), pOption, V ? "true" : "false");
                 ImGui::PopID();
-                (void)pCommand;
             };
-            Check(1, "##expose",  bExpose,  "SetBone", "Expose");
-            Check(2, "##virtual", bVirtual, "SetBone", "Virtual");
-            Check(3, "##delete",  bDelete,  "SetBone", "Delete");
+            Check(1, "##expose",  bExpose,  "Expose");
+            Check(2, "##virtual", bVirtual, "Virtual");
+            Check(3, "##delete",  bDelete,  "Delete");
 
-            int Effective = pOverride ? pOverride->m_LODLevel : 0;
             ImGui::TableSetColumnIndex(4);
             {
-                int Cur = Effective;
+                int Cur = pOverride ? pOverride->m_LODLevel : 0;
                 ImGui::PushID(Raw.c_str());
                 ImGui::SetNextItemWidth(-FLT_MIN);
                 if (ImGui::InputInt("##lod", &Cur, 1, 1))
-                {
-                    Cur = std::max(ParentLOD, Cur);         // a value below the parent's is what the compiler overrides
-                    Pending = std::format("SetBone -Bones {} -LOD {}", EditTargets(Skeleton, iBone, Raw), Cur);
-                    Effective = Cur;
-                }
+                    Pending = std::format("SetBone -Bones {} -LOD {}", EditTargets(Skeleton, iBone, Raw), std::max(ParentLOD, Cur));     // a value below the parent's is what the compiler overrides
                 ImGui::PopID();
             }
             if (iLayer >= 0)
@@ -1343,12 +1330,6 @@ namespace xskeleton_editor
                 if (ImGui::InputFloat("##mask", &Weight, 0.0f, 0.0f, "%.2f"))
                     Pending = std::format("SetMaskWeight -Layer {} -Bones {} -Weight {}", xeditor::Quote(D.m_MaskGroups[iLayer].m_Name), EditTargets(Skeleton, iBone, Raw), std::clamp(Weight, 0.0f, 1.0f));
                 ImGui::PopID();
-            }
-
-            if (bKids && bOpen)
-            {
-                for (auto& Child : Node.m_Children) RenderBoneNode(Skeleton, Compiled, Child, std::max(ParentLOD, Effective), iLayer, Pending);
-                ImGui::TreePop();
             }
         }
 
@@ -1372,27 +1353,11 @@ namespace xskeleton_editor
 
             std::unordered_map<std::string, int> Compiled;
             for (int i = 0; i < int(pSkeleton->getBones().size()); ++i) Compiled[RawName(*pSkeleton, i)] = i;
+            m_BoneRows.clear(); m_BoneRowLOD.clear();
+            BuildBoneRows(*pSkeleton, Compiled, m_Details.m_RootBone, -1, 0);
+            m_BoneTree.Follow(m_BoneRows, m_Selected, m_iHovered);      // a bone hovered or selected in the 3D view is brought into the tree's view
 
             std::string Pending;
-            // A bone hovered or newly selected in the 3D view (not in the tree itself) is brought into the tree's view
-            if (pSkeleton)
-            {
-                int iTarget = -1;
-                if (!m_bTreeHovered && m_iHovered >= 0 && m_iHovered != m_iLastHover3D) iTarget = m_iHovered;
-                if (m_Selected != m_LastSelected && !m_Selected.empty() && !m_bTreeHovered) iTarget = *m_Selected.rbegin();
-                m_iLastHover3D = m_bTreeHovered ? -1 : m_iHovered;
-                m_LastSelected = m_Selected;
-                if (iTarget >= 0 && iTarget < int(pSkeleton->getBones().size()))
-                {
-                    m_iScrollTo = iTarget;
-                    m_ScrollPath.assign(pSkeleton->getBones().size(), false);
-                    for (int p = pSkeleton->getBones()[iTarget].m_iParent; p >= 0; p = pSkeleton->getBones()[p].m_iParent) m_ScrollPath[p] = true;
-                }
-            }
-
-            m_bTreeHovered = false;
-            const bool bHovering = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
-            const int  Hovered = m_iHovered;
             if (ImGui::BeginTable("##Bones", iLayer >= 0 ? 6 : 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV))
             {
                 ImGui::TableSetupScrollFreeze(0, 1);
@@ -1403,11 +1368,13 @@ namespace xskeleton_editor
                 ImGui::TableSetupColumn("LOD",  ImGuiTableColumnFlags_WidthFixed, 80.0f);
                 if (iLayer >= 0) ImGui::TableSetupColumn("Weight", ImGuiTableColumnFlags_WidthFixed, 70.0f);
                 ImGui::TableHeadersRow();
-                RenderBoneNode(*pSkeleton, Compiled, m_Details.m_RootBone, 0, iLayer, Pending);
+                xskeleton_editor::bone_tree::hooks H;
+                H.m_Select    = [this](int iBone, bool bCtrl, bool bShift) { Select(iBone, bCtrl, bShift); };
+                H.m_HideLabel = [this](int Row) { return m_RenamingBone == m_BoneRows[Row].m_Name; };
+                H.m_AfterItem = [&](int Row, bool) { BoneRowExtras(*pSkeleton, Row, iLayer, Pending); };
+                m_BoneTree.Render(m_BoneRows, m_Selected, m_iHovered, H);
                 ImGui::EndTable();
             }
-            (void)bHovering; (void)Hovered;
-
             if (!Pending.empty()) xeditor::Run(m_Undo, Pending);
         }
 
@@ -1510,7 +1477,7 @@ namespace xskeleton_editor
                     else            ClearSelectionUnlessModifier(ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyShift);
                 }
             }
-            else if (!m_bTreeHovered) m_iHovered = -1;
+            else if (!m_BoneTree.m_bTreeHovered) m_iHovered = -1;
 
             auto Style = m_Scene.Style();
             const int iLayer = m_Settings.m_ColorMode == render_color_mode::ACTIVE_LAYER_RENDER && !m_Settings.m_ActiveLayer.empty() ? pSkeleton->findMaskGroupIndex(xstrtool::CRC32(m_Settings.m_ActiveLayer)) : -1;
@@ -2506,7 +2473,7 @@ namespace xskeleton_editor
                 {
                     ImGui::PushID(int(i));
                     if (ImGui::Selectable(std::format("{}  - {}", m_JNames[Att[i].m_Bone], Att[i].m_Why).c_str(), SelectedJoint() == Att[i].m_Bone, 0, ImVec2(ImGui::GetContentRegionAvail().x - 70, 0)))
-                    { m_Selected = { Att[i].m_Bone }; m_iScrollTo = Att[i].m_Bone; }
+                    { m_Selected = { Att[i].m_Bone }; }
                     if (Att[i].m_bFrame)
                     {
                         ImGui::SameLine();

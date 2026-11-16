@@ -14,6 +14,7 @@
 #include "xskeleton_editor_view.h"
 #include "source/Tools/Editor/xeditor_camera_toolbar.h"
 
+#include <functional>
 #include <set>
 #include <span>
 #include <vector>
@@ -40,6 +41,7 @@ namespace xskeleton_editor
         bool                    m_bGizmoHot = false, m_bGizmoDrag = false;      // set by an editor that runs a transform gizmo over the view, before Render
         runtime                 m_Scene;                    // the skeleton editor's own scene (outline, fill, shadow); public: the editors wire the camera commands and toolbar to it, and set the subject's centre and radius
         const bool*             m_pOpen = nullptr;          // when set and false, the render callback draws nothing (the panel's window is closed)
+        std::function<void(const ImVec2& Min, const ImVec2& Size)> m_Under;     // set: draws what goes under the bones and its own ground (the Ragdoll editor's skin), after the view is updated; the bones skip their grid
         std::vector<e19::draw_vert> m_ExtraLines;           // world-space line pairs an editor adds (a ragdoll's shapes over the bones): drawn with the bones, then cleared
 
         bool Init(xgpu::device& Device) noexcept { return m_Scene.Init(Device); }
@@ -141,9 +143,10 @@ namespace xskeleton_editor
                 else m_Scene.RenderShadow(*pWindow);
             }
 
-            xgpu::tools::imgui::AddCustomRenderCallback([this](xgpu::cmd_buffer& CmdBuffer, const ImVec2&, const ImVec2&)
+            if (m_Under) m_Under(Min, Avail);
+            xgpu::tools::imgui::AddCustomRenderCallback([this, bGrid = !m_Under](xgpu::cmd_buffer& CmdBuffer, const ImVec2&, const ImVec2&)
             {
-                if (!m_pOpen || *m_pOpen) m_Scene.DrawBones(CmdBuffer);
+                if (!m_pOpen || *m_pOpen) m_Scene.DrawBones(CmdBuffer, bGrid);
             });
             m_Scene.DrawOverlay();
         }
