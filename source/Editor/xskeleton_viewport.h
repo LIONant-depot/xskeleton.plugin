@@ -40,6 +40,7 @@ namespace xskeleton_editor
         bool                    m_bGizmoHot = false, m_bGizmoDrag = false;      // set by an editor that runs a transform gizmo over the view, before Render
         runtime                 m_Scene;                    // the skeleton editor's own scene (outline, fill, shadow); public: the editors wire the camera commands and toolbar to it, and set the subject's centre and radius
         const bool*             m_pOpen = nullptr;          // when set and false, the render callback draws nothing (the panel's window is closed)
+        std::vector<e19::draw_vert> m_ExtraLines;           // world-space line pairs an editor adds (a ragdoll's shapes over the bones): drawn with the bones, then cleared
 
         bool Init(xgpu::device& Device) noexcept { return m_Scene.Init(Device); }
 
@@ -121,6 +122,7 @@ namespace xskeleton_editor
                 for (const auto& C : m_Chunks) m_Sorted.insert(m_Sorted.end(), m_Fills.begin() + C.m_First, m_Fills.begin() + C.m_First + C.m_Count);
                 m_Fills.swap(m_Sorted);
             }
+            m_Lines.insert(m_Lines.end(), m_ExtraLines.begin(), m_ExtraLines.end()); m_ExtraLines.clear();
             m_Scene.SetLines(m_Lines);
             m_Scene.SetFill(m_Fills);
 
