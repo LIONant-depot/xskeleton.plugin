@@ -40,12 +40,12 @@ namespace xskeleton_joints
     }
 
     // the humanoid preset version a profile pins (0: none) and its name
-    inline int ProfileVersion(xskeleton_desc::joint_profile P) noexcept { return P == xskeleton_desc::joint_profile::HUMANOID_V1 ? 1 : P == xskeleton_desc::joint_profile::HUMANOID_V2 ? 2 : 0; }
+    inline int ProfileVersion(xskeleton_desc::joint_profile P) noexcept { return P == xskeleton_desc::joint_profile::HUMANOID_V1 ? 1 : P == xskeleton_desc::joint_profile::HUMANOID_V2 ? 2 : P == xskeleton_desc::joint_profile::HUMANOID_V3 ? 3 : 0; }
     // Pinning happens on activation: a skeleton with limits OFF always previews the newest preset (whatever JointProfile says); turning
     // limits ON writes the newest profile into JointProfile (same undo step) and that version is used from then on until the user changes it.
-    inline constexpr auto newest_profile_v = xskeleton_desc::joint_profile::HUMANOID_V2;
+    inline constexpr auto newest_profile_v = xskeleton_desc::joint_profile::HUMANOID_V3;
     inline xskeleton_desc::joint_profile EffectiveProfile(const xskeleton_desc::descriptor& D) noexcept { return D.m_JointLimits == xskeleton_desc::joint_limits_mode::ON ? D.m_JointProfile : newest_profile_v; }
-    inline const char* ProfileName(xskeleton_desc::joint_profile P) noexcept { const int V = ProfileVersion(P); return V == 1 ? xanimation::humanoid_v1_name_v : V == 2 ? xanimation::humanoid_v2_name_v : "no profile"; }
+    inline const char* ProfileName(xskeleton_desc::joint_profile P) noexcept { const int V = ProfileVersion(P); return V == 1 ? xanimation::humanoid_v1_name_v : V == 2 ? xanimation::humanoid_v2_name_v : V == 3 ? xanimation::humanoid_v3_name_v : "no profile"; }
 
     inline xanimation::joint_limit LimitFromOverride(const xskeleton_desc::joint_override& O, const xmath::fquat& Rest, const xmath::fquat& SuggestedFrame)
     {

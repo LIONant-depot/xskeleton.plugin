@@ -157,11 +157,12 @@ namespace xskeleton_desc
     { xproperty::settings::enum_item("Off", joint_limits_mode::OFF)
     , xproperty::settings::enum_item("On",  joint_limits_mode::ON)
     };
-    enum class joint_profile : std::uint8_t { NONE, HUMANOID_V1, HUMANOID_V2 };
+    enum class joint_profile : std::uint8_t { NONE, HUMANOID_V1, HUMANOID_V2, HUMANOID_V3 };
     static constexpr auto joint_profile_v = std::array
     { xproperty::settings::enum_item("None",        joint_profile::NONE)
     , xproperty::settings::enum_item("Humanoid v1", joint_profile::HUMANOID_V1)
     , xproperty::settings::enum_item("Humanoid v2", joint_profile::HUMANOID_V2)
+    , xproperty::settings::enum_item("Humanoid v3", joint_profile::HUMANOID_V3)
     };
     enum class joint_geometry : std::uint8_t { FREE, FIXED, HINGE, BALL };
     static constexpr auto joint_geometry_v = std::array
