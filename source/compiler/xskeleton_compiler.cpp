@@ -221,6 +221,7 @@ namespace xskeleton_compiler
             if (auto Err = BuildJoints(Bones); Err) return Err;
 
             BuildMirror(Bones);
+            BuildRoles(Bones);
 
             return {};
         }
@@ -253,6 +254,33 @@ namespace xskeleton_compiler
             for (int i = 0; i < N; ++i) m_FinalSkeleton.m_pMirror[i] = static_cast<std::int16_t>(Mirror[i]);
             m_FinalSkeleton.m_MirrorNormal[0] = Normal.m_X; m_FinalSkeleton.m_MirrorNormal[1] = Normal.m_Y; m_FinalSkeleton.m_MirrorNormal[2] = Normal.m_Z;
             LogMessage(xresource_pipeline::msg_type::INFO, std::format("Mirror: {} left/right pairs, plane normal ({:.3f}, {:.3f}, {:.3f}), rest symmetric to {:.2f} mm", nPairs, Normal.m_X, Normal.m_Y, Normal.m_Z, Worst * 1000.0f));
+        }
+
+        //--------------------------------------------------------------------------------------
+        // Each bone's role in the body (xanimation::BodyRoles: hips, spine, thigh, calf, foot... by name) for what the runtime moves on its own:
+        // stride/orientation warping and foot IK (K2/K3). No hips or no leg found: no array (an info line); nothing else changes.
+        void BuildRoles(const std::vector<merged_bone>& Bones)
+        {
+            const int N = static_cast<int>(Bones.size());
+            std::vector<std::string_view> Names(N); std::vector<std::int32_t> Parents(N); xanimation::pose Rest; Rest.resize(N);
+            for (int i = 0; i < N; ++i)
+            {
+                Names[i] = Bones[i].m_Name; Parents[i] = Bones[i].m_iParent;
+                Rest.m_Position[i] = Bones[i].m_BindTranslation; Rest.m_Rotation[i] = Bones[i].m_BindRotation.NormalizeSafeCopy(); Rest.m_Scale[i] = Bones[i].m_BindScale;
+            }
+            const xanimation::skeleton_view SV{ Parents };
+            const auto Roles = xanimation::BodyRoles(SV, Names, Rest);
+            const auto Rig = xanimation::FindWarpRig(SV, Roles);
+            if (!Rig.valid())
+            {
+                LogMessage(xresource_pipeline::msg_type::INFO, "Body roles: no hips with thigh -> calf -> foot legs found by name: no warping or foot IK at runtime");
+                return;
+            }
+            m_FinalSkeleton.m_nRoles = static_cast<std::uint16_t>(N);
+            m_FinalSkeleton.m_pRoles = new std::uint8_t[N];
+            std::copy(Roles.begin(), Roles.end(), m_FinalSkeleton.m_pRoles);
+            std::string Legs; for (const auto& L : Rig.m_Legs) Legs += std::format(" {}>{}>{}", Names[L.m_Thigh], Names[L.m_Calf], Names[L.m_Foot]);
+            LogMessage(xresource_pipeline::msg_type::INFO, std::format("Body roles: hips {}, {} legs:{}; {} spine bones", Names[Rig.m_Hips], Rig.m_Legs.size(), Legs, Rig.m_Spine.size()));
         }
 
         //--------------------------------------------------------------------------------------
@@ -745,7 +773,7 @@ namespace xskeleton_compiler
                 xskeleton::skeleton S; S.Initialize();
                 S.m_nBones = 2; S.m_pBones = new xskeleton::skeleton::bone[2]; S.m_pBoneNames = new xskeleton::skeleton::name[2]; S.m_pBoneRests = new xskeleton::skeleton::rest[2];
                 S.m_pBones[1].m_iParent = 0; S.m_nLODs = 1; S.m_pLODBoneCount = new std::uint16_t[1]{ 2 };
-                if (bWith) { S.m_nJoints = 2; S.m_pJoints = new xskeleton::skeleton::joint[2]; S.m_pJoints[1] = xskeleton_joints::ToRuntime(R2.m_Limits[Leg]); S.m_nMirror = 2; S.m_pMirror = new std::int16_t[2]{ 0, 1 }; S.m_MirrorNormal[0] = 0.6f; S.m_MirrorNormal[2] = -0.8f; }
+                if (bWith) { S.m_nJoints = 2; S.m_pJoints = new xskeleton::skeleton::joint[2]; S.m_pJoints[1] = xskeleton_joints::ToRuntime(R2.m_Limits[Leg]); S.m_nMirror = 2; S.m_pMirror = new std::int16_t[2]{ 0, 1 }; S.m_MirrorNormal[0] = 0.6f; S.m_MirrorNormal[2] = -0.8f; S.m_nRoles = 2; S.m_pRoles = new std::uint8_t[2]{ 2, 10 }; }
                 const auto File = (Dir / (bWith ? L"with.bin" : L"without.bin")).wstring();
                 xserializer::stream W;
                 const bool Saved = !W.Save(File, S, xserializer::compression_level::FAST);
@@ -757,8 +785,9 @@ namespace xskeleton_compiler
                 {
                     if (bWith) Check(pS->m_nJoints == 2 && pS->m_pJoints[1].m_Type == 2 && pS->m_pJoints[1].m_HingeMax == xskeleton_joints::ToRuntime(R2.m_Limits[Leg]).m_HingeMax && pS->m_pJoints[1].m_Frame[3] == xskeleton_joints::ToRuntime(R2.m_Limits[Leg]).m_Frame[3], "the joint array comes back field for field");
                     if (bWith) Check(pS->m_nMirror == 2 && pS->m_pMirror[1] == 1 && pS->m_MirrorNormal[0] == 0.6f && pS->m_MirrorNormal[2] == -0.8f, "the mirror table comes back");
+                    if (bWith) Check(pS->getRoles().size() == 2 && pS->m_pRoles[0] == 2 && pS->m_pRoles[1] == 10, "the body roles come back");
                     else Check(pS->m_nJoints == 0 && pS->getJoints().empty(), "[JL-001] no array: every joint free");
-                    if (!bWith) Check(pS->getMirror().empty(), "no mirror table: none comes back");
+                    if (!bWith) Check(pS->getMirror().empty() && pS->getRoles().empty(), "no mirror table, no roles: none comes back");
                     xserializer::default_memory_handler_v.Free(xserializer::mem_type{ .m_bUnique = true }, pS);     // one block: the arrays live inside it
                 }
             }
