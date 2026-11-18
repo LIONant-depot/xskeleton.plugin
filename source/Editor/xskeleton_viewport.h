@@ -66,7 +66,9 @@ namespace xskeleton_editor
         ImVec2 RectSize() const noexcept { return m_Size; }
         bool Project(const xmath::fvec3& P, ImVec2& Out) const noexcept
         {
-            const xmath::fvec4 Clip = m_Scene.m_View.getW2C() * xmath::fvec4(P, 1.0f);
+            // (the non-const getter: it brings the matrix up to date when the view changed since its last use - the const one asserts instead;
+            // C88's motion paths projected while the camera toolbar had just moved the view)
+            const xmath::fvec4 Clip = const_cast<xgpu::tools::view&>(m_Scene.m_View).getW2C() * xmath::fvec4(P, 1.0f);
             if (Clip.m_W <= 1.0e-4f) return false;
             Out = ImVec2(m_Min.x + (Clip.m_X / Clip.m_W * 0.5f + 0.5f) * m_Size.x, m_Min.y + (Clip.m_Y / Clip.m_W * 0.5f + 0.5f) * m_Size.y);      // (the projection already flips Y for Vulkan: the skeleton editor's labels do the same)
             return true;
