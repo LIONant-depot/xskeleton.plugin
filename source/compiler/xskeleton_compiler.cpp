@@ -271,9 +271,18 @@ namespace xskeleton_compiler
             const xanimation::skeleton_view SV{ Parents };
             const auto Roles = xanimation::BodyRoles(SV, Names, Rest);
             const auto Rig = xanimation::FindWarpRig(SV, Roles, &Rest);      // (with the rest: legs by shape when names find none - real creature rigs, phase D)
-            if (!Rig.valid())
+            const bool bHead = std::find(Roles.begin(), Roles.end(), std::uint8_t(xanimation::bone_slot::HEAD)) != Roles.end();
+            if (!Rig.valid() && !bHead)
             {
-                LogMessage(xresource_pipeline::msg_type::INFO, "Body roles: no hips with legs (by name or by shape): no warping or foot IK at runtime");
+                LogMessage(xresource_pipeline::msg_type::INFO, "Body roles: no hips with legs (by name or by shape) and no head: no warping, foot IK or look-at at runtime");
+                return;
+            }
+            if (!Rig.valid())       // (a legless body - a snake: its head and spine roles kept for the look-at, the lean and the springs)
+            {
+                m_FinalSkeleton.m_nRoles = static_cast<std::uint16_t>(N);
+                m_FinalSkeleton.m_pRoles = new std::uint8_t[N];
+                std::copy(Roles.begin(), Roles.end(), m_FinalSkeleton.m_pRoles);
+                LogMessage(xresource_pipeline::msg_type::INFO, "Body roles: no legs (a legless body); the head and spine roles kept for the look-at, lean and springs");
                 return;
             }
             m_FinalSkeleton.m_nRoles = static_cast<std::uint16_t>(N);
