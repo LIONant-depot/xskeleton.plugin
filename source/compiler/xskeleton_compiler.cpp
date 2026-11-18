@@ -270,10 +270,10 @@ namespace xskeleton_compiler
             }
             const xanimation::skeleton_view SV{ Parents };
             const auto Roles = xanimation::BodyRoles(SV, Names, Rest);
-            const auto Rig = xanimation::FindWarpRig(SV, Roles);
+            const auto Rig = xanimation::FindWarpRig(SV, Roles, &Rest);      // (with the rest: legs by shape when names find none - real creature rigs, phase D)
             if (!Rig.valid())
             {
-                LogMessage(xresource_pipeline::msg_type::INFO, "Body roles: no hips with thigh -> calf -> foot legs found by name: no warping or foot IK at runtime");
+                LogMessage(xresource_pipeline::msg_type::INFO, "Body roles: no hips with legs (by name or by shape): no warping or foot IK at runtime");
                 return;
             }
             m_FinalSkeleton.m_nRoles = static_cast<std::uint16_t>(N);
