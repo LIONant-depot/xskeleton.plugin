@@ -348,7 +348,7 @@ namespace xskeleton_compiler
                     Lim += std::format("  relaxed {:.1f},{:.1f},{:.1f} tone {:.2f}", Rx.m_X, Rx.m_Y, Rx.m_Z, L.m_Tone);
                 Txt += std::format("{}\t{}\t{}\t{}\n", Names[i], R.m_Source[i], Types[static_cast<int>(L.m_Type)], Lim);
             }
-            if (std::FILE* f = _wfopen(std::format(L"{}\\JointLimits.txt", m_ResourceLogPath).c_str(), L"wb")) { std::fwrite(Txt.data(), 1, Txt.size(), f); std::fclose(f); }
+            { std::FILE* f = nullptr; if (_wfopen_s(&f, std::format(L"{}\\JointLimits.txt", m_ResourceLogPath).c_str(), L"wb") == 0 && f) { std::fwrite(Txt.data(), 1, Txt.size(), f); std::fclose(f); } }      // (Windows-only: its own _s form)
             return {};
         }
 

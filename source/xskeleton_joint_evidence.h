@@ -31,7 +31,7 @@ namespace xskeleton_joint_evidence
 
     inline bool Write(const std::wstring& Path, const evidence& E)
     {
-        std::FILE* f = _wfopen(Path.c_str(), L"wb");
+        std::FILE* f = nullptr; if (_wfopen_s(&f, Path.c_str(), L"wb") != 0) f = nullptr;      // (Windows-only code: its own _s form)
         if (!f) return false;
         auto W = [&](const void* p, std::size_t n) { std::fwrite(p, 1, n, f); };
         auto Str = [&](const std::string& S) { const auto n = static_cast<std::uint16_t>(std::min<std::size_t>(S.size(), 0xFFFF)); W(&n, 2); W(S.data(), n); };
@@ -53,7 +53,7 @@ namespace xskeleton_joint_evidence
     inline bool Read(const std::wstring& Path, evidence& E)
     {
         E = {};
-        std::FILE* f = _wfopen(Path.c_str(), L"rb");
+        std::FILE* f = nullptr; if (_wfopen_s(&f, Path.c_str(), L"rb") != 0) f = nullptr;      // (Windows-only code: its own _s form)
         if (!f) return false;
         bool Ok = true;
         auto R = [&](void* p, std::size_t n) { if (Ok && std::fread(p, 1, n, f) != n) Ok = false; };
